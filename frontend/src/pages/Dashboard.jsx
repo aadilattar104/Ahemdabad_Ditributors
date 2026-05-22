@@ -9,31 +9,33 @@ import FilterBar from "../components/Filters/FilterBar";
 import RecurringShopsTable from "../components/RecurringShops/RecurringShopsTable";
 import {
   getOverview, getShops, getMoMTrend, getTopShops,
-  getTopShopsByQty, getDistributors, getSkus, getRecurringShops,
-  getTopShopsSkuBreakdown,
+  getTopShopsByQty, getRecurringShops, getTopShopsSkuBreakdown,
 } from "../services/api";
 
-export default function Dashboard() {
-  const [filters, setFilters]         = useState({ month: "", year: "", distributor: "", sku: "" });
-  const [distributors, setDistributors] = useState([]);
-  const [skus, setSkus]               = useState([]);
-  const [overview, setOverview]       = useState(null);
-  const [shops, setShops]             = useState([]);
-  const [trend, setTrend]             = useState([]);
-  const [topRev, setTopRev]           = useState([]);
-  const [topQty, setTopQty]           = useState([]);
-  const [recurring, setRecurring]     = useState([]);
+// Props:
+//   distributors        — string[]  (from App, always fresh)
+//   skus                — string[]  (from App, always fresh)
+//   onDistributorsChange — () => void  (call App to re-fetch after any mutation)
+export default function Dashboard({ distributors = [], skus = [], onDistributorsChange }) {
+  const [filters, setFilters]     = useState({ month: "", year: "", distributor: "", sku: "" });
+  const [overview, setOverview]   = useState(null);
+  const [shops, setShops]         = useState([]);
+  const [trend, setTrend]         = useState([]);
+  const [topRev, setTopRev]       = useState([]);
+  const [topQty, setTopQty]       = useState([]);
+  const [recurring, setRecurring] = useState([]);
   const [skuBreakdown, setSkuBreakdown] = useState({ by_revenue: [], by_qty: [] });
-  const [loading, setLoading]         = useState(true);
-  const [error, setError]             = useState("");
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState("");
 
-  // Load distributors + SKUs once
+  // If the selected distributor was deleted/renamed, clear it from the filter
   useEffect(() => {
-    getDistributors().then((d) => setDistributors(d.map((x) => x.distributor_name))).catch(() => {});
-    getSkus().then(setSkus).catch(() => {});
-  }, []);
+    if (filters.distributor && !distributors.includes(filters.distributor)) {
+      setFilters((prev) => ({ ...prev, distributor: "" }));
+    }
+  }, [distributors]); // runs every time App pushes a fresh list down
 
-  // Reload when filters change
+  // Reload analytics when filters change
   useEffect(() => {
     const p = Object.fromEntries(Object.entries(filters).filter(([, v]) => v));
     setLoading(true);
@@ -66,7 +68,7 @@ export default function Dashboard() {
       {/* Header + filters */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "2rem", flexWrap: "wrap", gap: 12 }}>
         <div>
-          <p style={{ margin: 0, fontWeight: 600, fontSize: 24 }}>Dashboard</p>
+          <p style={{ margin: 0, fontWeight: 600, fontSize: 24 }}>Distributor Dashboard</p>
           <p style={{ margin: "4px 0 0", fontSize: 15, color: "var(--color-text-secondary)" }}>
             Shop-wise sales analytics across all distributors
           </p>
@@ -81,28 +83,13 @@ export default function Dashboard() {
       )}
 
       <div style={{ display: "flex", flexDirection: "column", gap: "2rem" }}>
-
-        {/* Overview cards */}
         <OverviewCards data={overview} loading={loading} />
-
-        {/* Top shops by revenue — full width */}
         <TopShopsChart data={topRev} skuData={skuBreakdown.by_revenue} loading={loading} />
-
-        {/* Top shops by qty — full width */}
         <TopShopsByQtyChart data={topQty} skuData={skuBreakdown.by_qty} loading={loading} />
-
-        {/* MoM trend — full width */}
         <MoMTrendChart data={trend} loading={loading} />
-
-        {/* By distributor table */}
         <DistributorTable rows={overview?.by_distributor || []} loading={loading} />
-
-        {/* All shops table */}
         <ShopTable rows={shops} loading={loading} />
-
-        {/* Recurring shops */}
         <RecurringShopsTable rows={recurring} loading={loading} />
-
       </div>
     </div>
   );

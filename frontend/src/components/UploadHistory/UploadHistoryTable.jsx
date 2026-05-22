@@ -1,8 +1,10 @@
 // UploadHistoryTable shows a log of all past file uploads.
 // Props:
-//   rows    — [{ id, filename, distributor_name, month, year, status, shop_count, record_count, uploaded_at }]
-//   loading — boolean
-//   onView  — (uploadId) => void
+//   rows     — [{ id, filename, distributor_name, month, year, status, shop_count, record_count, uploaded_at }]
+//   loading  — boolean
+//   onView   — (uploadId) => void
+//   onDelete — (uploadId) => void
+//   onRename — (distributorName) => void
 
 const STATUS_STYLES = {
   success: { background: "var(--color-background-success)", color: "var(--color-text-success)" },
@@ -24,7 +26,20 @@ function fmtDate(iso) {
   return new Date(iso).toLocaleString("en-IN", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-export default function UploadHistoryTable({ rows = [], loading = false, onView }) {
+const iconBtn = {
+  background: "transparent",
+  border: "none",
+  cursor: "pointer",
+  padding: "4px 6px",
+  borderRadius: "var(--border-radius-sm)",
+  color: "var(--color-text-secondary)",
+  fontSize: 15,
+  lineHeight: 1,
+  display: "inline-flex",
+  alignItems: "center",
+};
+
+export default function UploadHistoryTable({ rows = [], loading = false, onView, onDelete, onRename }) {
   return (
     <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", overflow: "hidden" }}>
       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
@@ -64,11 +79,31 @@ export default function UploadHistoryTable({ rows = [], loading = false, onView 
                   <td style={{ padding: "10px 14px", textAlign: "center" }}><StatusBadge status={row.status} /></td>
                   <td style={{ padding: "10px 14px", textAlign: "center", color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>{fmtDate(row.uploaded_at)}</td>
                   <td style={{ padding: "10px 14px", textAlign: "center" }}>
-                    {onView && (
-                      <button onClick={() => onView(row.id)} style={{ fontSize: 12, padding: "4px 10px" }}>
-                        View
-                      </button>
-                    )}
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 2 }}>
+                      {onView && (
+                        <button onClick={() => onView(row.id)} style={{ fontSize: 12, padding: "4px 10px" }}>
+                          View
+                        </button>
+                      )}
+                      {onRename && (
+                        <button
+                          onClick={() => onRename(row.distributor_name)}
+                          style={iconBtn}
+                          title={`Rename "${row.distributor_name}" globally`}
+                        >
+                          <i className="ti ti-pencil" aria-hidden />
+                        </button>
+                      )}
+                      {onDelete && (
+                        <button
+                          onClick={() => onDelete(row.id)}
+                          style={{ ...iconBtn, color: "var(--color-text-danger)" }}
+                          title="Delete this upload"
+                        >
+                          <i className="ti ti-trash" aria-hidden />
+                        </button>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ))}

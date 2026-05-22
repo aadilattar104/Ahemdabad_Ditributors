@@ -2,9 +2,10 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 
 const SKU_COLORS = ["#1D9E75", "#378ADD", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#14B8A6", "#F97316"];
 
-function CustomTooltip({ active, payload, label }) {
+function CustomTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
   const total = payload.reduce((s, p) => s + (p.value || 0), 0);
+  const fullName = payload[0]?.payload?.shop_name || "";
   return (
     <div style={{
       background: "var(--color-background-primary)",
@@ -13,8 +14,9 @@ function CustomTooltip({ active, payload, label }) {
       padding: "8px 12px",
       fontSize: 13,
       minWidth: 160,
+      maxWidth: 320,
     }}>
-      <p style={{ margin: "0 0 6px", fontWeight: 500 }}>{label}</p>
+      <p style={{ margin: "0 0 6px", fontWeight: 500, wordBreak: "break-word" }}>{fullName}</p>
       {payload.map((p) => (
         <p key={p.name} style={{ margin: "2px 0", color: "var(--color-text-secondary)", display: "flex", justifyContent: "space-between", gap: 16 }}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>

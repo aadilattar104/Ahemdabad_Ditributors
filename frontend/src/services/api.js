@@ -10,12 +10,14 @@ async function request(path, options = {}) {
 }
 
 function qs(params = {}) {
-  const p = Object.fromEntries(Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== ""));
+  const p = Object.fromEntries(
+    Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== "")
+  );
   const s = new URLSearchParams(p).toString();
   return s ? "?" + s : "";
 }
 
-// Upload
+// ─── Distributor upload (UNCHANGED) ──────────────────────────────────────────
 export async function uploadFile(file, distributorName) {
   const form = new FormData();
   form.append("file", file);
@@ -23,24 +25,63 @@ export async function uploadFile(file, distributorName) {
   return request("/upload", { method: "POST", body: form });
 }
 
-// Uploads history
-export async function getUploads() { return request("/uploads"); }
-export async function getUploadById(id) { return request(`/uploads/${id}`); }
+// ─── Modern Trade upload (UNCHANGED) ─────────────────────────────────────────
+export async function uploadModernTrade(file, chainName) {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("chain_name", chainName);
+  return request("/upload/modern-trade", { method: "POST", body: form });
+}
 
-// Distributors
-export async function getDistributors() { return request("/distributors"); }
+// ─── Uploads history (UNCHANGED) ─────────────────────────────────────────────
+export async function getUploads()          { return request("/uploads"); }
+export async function getUploadById(id)     { return request(`/uploads/${id}`); }
 
-// SKUs
-export async function getSkus() { return request("/analytics/skus"); }
+// ─── Delete upload (NEW) ─────────────────────────────────────────────────────
+export async function deleteUpload(uploadId) {
+  return request(`/uploads/${uploadId}`, { method: "DELETE" });
+}
 
-// Analytics — all accept { month, year, distributor, sku }
-export async function getOverview(params = {})      { return request(`/analytics/overview${qs(params)}`); }
-export async function getShops(params = {})         { return request(`/analytics/shops${qs(params)}`); }
-export async function getMoMTrend(params = {})      { return request(`/analytics/mom-trend${qs(params)}`); }
-export async function getTopShops(params = {})      { return request(`/analytics/top-shops${qs(params)}`); }
-export async function getTopShopsByQty(params = {}) { return request(`/analytics/top-shops-by-qty${qs(params)}`); }
-export async function getRecurringShops(params = {})        { return request(`/analytics/recurring-shops${qs(params)}`); }
+// ─── Distributors (UNCHANGED) ────────────────────────────────────────────────
+export async function getDistributors()     { return request("/distributors"); }
+
+// ─── Rename distributor globally ─────────────────────────────────────────────
+// Uses POST to avoid FastAPI conflict with PATCH /distributors/{dist_id}
+export async function renameDistributor(oldName, newName) {
+  return request("/distributors/rename", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ old_name: oldName, new_name: newName }),
+  });
+}
+
+// ─── SKUs (UNCHANGED) ────────────────────────────────────────────────────────
+export async function getSkus()             { return request("/analytics/skus"); }
+
+// ─── Analytics — distributor (UNCHANGED) ─────────────────────────────────────
+export async function getOverview(params = {})             { return request(`/analytics/overview${qs(params)}`); }
+export async function getShops(params = {})                { return request(`/analytics/shops${qs(params)}`); }
+export async function getMoMTrend(params = {})             { return request(`/analytics/mom-trend${qs(params)}`); }
+export async function getTopShops(params = {})             { return request(`/analytics/top-shops${qs(params)}`); }
+export async function getTopShopsByQty(params = {})        { return request(`/analytics/top-shops-by-qty${qs(params)}`); }
+export async function getRecurringShops(params = {})       { return request(`/analytics/recurring-shops${qs(params)}`); }
 export async function getTopShopsSkuBreakdown(params = {}) { return request(`/analytics/top-shops-sku-breakdown${qs(params)}`); }
 
-// Export
-export function getExcelExportUrl(params = {}) { return `${BASE_URL}/export/excel${qs(params)}`; }
+// ─── Export (UNCHANGED) ──────────────────────────────────────────────────────
+export function getExcelExportUrl(params = {}) {
+  return `${BASE_URL}/export/excel${qs(params)}`;
+}
+
+// ─── Modern Trade — chains & filters (UNCHANGED) ─────────────────────────────
+export async function getMtChains()                        { return request("/mt/chains"); }
+export async function getMtStores(params = {})             { return request(`/mt/analytics/stores${qs(params)}`); }
+export async function getMtMonths(params = {})             { return request(`/mt/analytics/months${qs(params)}`); }
+export async function getMtSkus(params = {})               { return request(`/mt/analytics/skus${qs(params)}`); }
+
+// ─── Modern Trade — chart data (UNCHANGED) ───────────────────────────────────
+export async function getMtRevenue(params = {})            { return request(`/mt/analytics/revenue${qs(params)}`); }
+export async function getMtQty(params = {})                { return request(`/mt/analytics/qty${qs(params)}`); }
+export async function getMtSoh(params = {})                { return request(`/mt/analytics/soh${qs(params)}`); }
+
+// ─── Modern Trade — upload history (UNCHANGED) ───────────────────────────────
+export async function getMtUploads(params = {})            { return request(`/mt/uploads${qs(params)}`); }

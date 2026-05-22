@@ -16,6 +16,14 @@ PATTERN B — Invoice register (Synergy):
   header row(s) → Sr | Date | Bill No | C/D | Party Name | ... | Qty | Rate | Amount
   invoice row: col[0]=Sr(int), col[1]=date, col[2]=bill_no, col[4]=party_name
   product line: col[0]=blank, col[1]=sku_name, col[7]=qty, col[8]=rate, col[9]=amount
+
+DATE ARCHITECTURE (transaction-driven):
+  month and year are ALWAYS derived from each transaction's bill_date inside _make().
+  External month/year parameters have been removed entirely from parse_generic(),
+  _parse_grouped(), _parse_register(), and _make().
+  This prevents wrong aggregation when distributors export full-FY, multi-month,
+  partial, or manually edited files with incorrect report headers.
+  _parse_date() uses dayfirst=True to correctly handle Indian DD/MM/YYYY formats.
 """
 
 import pandas as pd
@@ -23,23 +31,33 @@ import numpy as np
 import datetime
 from .shop_name_cleaner import clean_shop_name
 
-QTY_KEYWORDS   = ["qty", "quantity", "units", "pcs"]
-AMT_KEYWORDS   = ["product amount", "prod amt", "net amount", "net amt", "amount", "value"]
-AMT_SKIP       = ["bill amt", "gst", "igst", "cgst", "sgst", "tax", "total amt", "bill amount"]
-RATE_KEYWORDS  = ["rate", "price", "mrp"]
-PARTY_KEYWORDS = ["party name", "party", "customer name", "customer", "shop name", "retailer"]
-SKU_KEYWORDS   = ["product name", "product", "particular", "item name", "item", "description"]
-DATE_KEYWORDS  = ["bill date", "date"]
+QTY_KEYWORDS    = ["qty", "quantity", "units", "pcs"]
+AMT_KEYWORDS    = ["product amount", "prod amt", "net amount", "net amt", "amount", "value"]
+AMT_SKIP        = ["bill amt", "gst", "igst", "cgst", "sgst", "tax", "total amt", "bill amount"]
+RATE_KEYWORDS   = ["rate", "price", "mrp"]
+PARTY_KEYWORDS  = ["party name", "party", "customer name", "customer", "shop name", "retailer"]
+SKU_KEYWORDS    = ["product name", "product", "particular", "item name", "item", "description"]
+DATE_KEYWORDS   = ["bill date", "date"]
 BILLNO_KEYWORDS = ["bill no", "bill number", "invoice no", "voucher no"]
 
 
 def parse_generic(
     df: pd.DataFrame,
     distributor_name: str,
-    month: str | None,
-    year: int | None,
 ) -> list[dict]:
+    """
+    Parse any distributor Excel sheet into a list of SKU-level transaction records.
 
+    month and year are NOT accepted as parameters — they are derived per-transaction
+    from bill_date inside _make(). This is the single source of truth for date bucketing.
+
+    Args:
+        df:               DataFrame of the best sheet (from select_best_sheet)
+        distributor_name: Name of the distributor (used for shop fuzzy grouping)
+
+    Returns:
+        List of raw record dicts, each containing month and year derived from bill_date.
+    """
     header_idx, header_row = _find_header_row(df)
     if header_idx is None:
         return []
@@ -58,13 +76,13 @@ def parse_generic(
         return _parse_grouped(
             df, header_idx,
             qty_col, amt_col, rate_col, sku_col, date_col, billno_col,
-            distributor_name, month, year
+            distributor_name,
         )
     else:
         return _parse_register(
             df, header_idx,
             qty_col, amt_col, rate_col, party_col, sku_col, date_col, billno_col,
-            distributor_name, month, year
+            distributor_name,
         )
 
 
@@ -72,15 +90,29 @@ def parse_generic(
 # PATTERN A: Party-wise grouped (Iceland)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _parse_grouped(df, header_idx, qty_col, amt_col, rate_col, sku_col, date_col, billno_col, distributor_name, month, year):
+def _parse_grouped(
+    df, header_idx,
+    qty_col, amt_col, rate_col, sku_col, date_col, billno_col,
+    distributor_name,
+):
+    """
+    Parse party-wise grouped format (e.g. Iceland).
+
+    Structure:
+      - Shop name row:  col[0] = shop name, rest blank/sparse
+      - Product line:   col[0] = bill_no (numeric), col[1] = bill_date,
+                        col[2] = product_name, col[3] = qty, col[4] = rate, col[5] = amount
+
+    month/year are derived from bill_date per transaction inside _make().
+    """
     records = []
-    current_shop = None
+    current_shop      = None
     current_shop_type = "REGULAR"
-    current_bill_no = None
+    current_bill_no   = None
     current_bill_date = None
 
     for i in range(header_idx + 1, len(df)):
-        row = df.iloc[i]
+        row  = df.iloc[i]
         col0 = row.iloc[0]
 
         if _is_grand_total(row):
@@ -90,43 +122,43 @@ def _parse_grouped(df, header_idx, qty_col, amt_col, rate_col, sku_col, date_col
         if _is_subtotal(row):
             continue
 
-        # Shop name row
+        # ── Shop name row ────────────────────────────────────────────────────
         if _is_shop_name_row(row):
             current_shop, current_shop_type = clean_shop_name(_str(col0))
-            current_bill_no = None
+            current_bill_no   = None
             current_bill_date = None
             continue
 
         if current_shop is None:
             continue
 
-        # Bill header line: col0 is numeric (bill number), col1 is a date
-        # In Iceland format each line IS a product line with bill_no repeated
+        # ── Product/bill line: col0 is numeric (bill_no) ─────────────────────
+        # In Iceland format every product line carries bill_no + bill_date inline.
         if _is_numeric_val(col0):
-            # Extract bill info from this line
+            # Bill metadata from this line
             current_bill_no = _str(col0).strip()
+
             if date_col is not None:
                 current_bill_date = _parse_date(row.iloc[date_col])
             elif len(row) > 1:
                 current_bill_date = _parse_date(row.iloc[1])
 
-            # Extract SKU and quantities from this same line
+            # SKU name
             sku = ""
             if sku_col is not None:
                 sku = _str(row.iloc[sku_col])
-            # fallback: col2 is product name in Iceland
-            if not sku and len(row) > 2:
+            if not sku and len(row) > 2:          # fallback: col2 in Iceland layout
                 sku = _str(row.iloc[2])
 
-            qty     = _safe_int(row.iloc[qty_col])   if qty_col is not None  else 0
-            revenue = _safe_float(row.iloc[amt_col]) if amt_col is not None  else 0.0
+            qty     = _safe_int(row.iloc[qty_col])    if qty_col is not None  else 0
+            revenue = _safe_float(row.iloc[amt_col])  if amt_col is not None  else 0.0
             rate    = _safe_float(row.iloc[rate_col]) if rate_col is not None else None
 
             if sku and (qty > 0 or revenue > 0):
                 records.append(_make(
                     distributor_name, current_shop, current_shop_type,
                     sku, current_bill_no, current_bill_date,
-                    qty, rate, revenue, month, year
+                    qty, rate, revenue,
                 ))
 
     return records
@@ -136,14 +168,30 @@ def _parse_grouped(df, header_idx, qty_col, amt_col, rate_col, sku_col, date_col
 # PATTERN B: Invoice register (Synergy)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _parse_register(df, header_idx, qty_col, amt_col, rate_col, party_col, sku_col, date_col, billno_col, distributor_name, month, year):
+def _parse_register(
+    df, header_idx,
+    qty_col, amt_col, rate_col, party_col, sku_col, date_col, billno_col,
+    distributor_name,
+):
+    """
+    Parse invoice-register format (e.g. Synergy).
+
+    Structure:
+      - Invoice header row: col[0] = Sr (positive int), col[1] = date,
+                            col[2] = bill_no, col[4] = party_name
+      - Product line:       col[0] = blank, col[1] = sku_name,
+                            col[7] = qty, col[8] = rate, col[9] = amount
+
+    bill_date is extracted from the invoice header row.
+    month/year are derived from that bill_date inside _make().
+    """
     records = []
-    current_shop = None
+    current_shop      = None
     current_shop_type = "REGULAR"
-    current_bill_no = None
+    current_bill_no   = None
     current_bill_date = None
 
-    # Skip sub-header rows after main header
+    # Skip any sub-header rows immediately after the main header
     data_start = header_idx + 1
     while data_start < len(df):
         row = df.iloc[data_start]
@@ -156,7 +204,7 @@ def _parse_register(df, header_idx, qty_col, amt_col, rate_col, party_col, sku_c
         break
 
     for i in range(data_start, len(df)):
-        row = df.iloc[i]
+        row  = df.iloc[i]
         col0 = row.iloc[0]
 
         if _is_grand_total(row):
@@ -164,22 +212,25 @@ def _parse_register(df, header_idx, qty_col, amt_col, rate_col, party_col, sku_c
         if _is_blank(row):
             continue
 
-        # Invoice header row: col0 is positive integer (Sr No)
+        # ── Invoice header row: col0 is positive integer (Sr No) ─────────────
         if _is_pos_int(col0):
-            # Party name
+            # Party name extraction
             party_name = ""
             if party_col is not None and party_col < len(row):
                 party_name = _str(row.iloc[party_col])
             if not party_name:
+                # Fallback: scan cols 2–9 for first non-numeric text > 3 chars
                 for j in range(2, min(10, len(row))):
                     v = _str(row.iloc[j])
                     if v and len(v) > 3 and not _is_numeric_val(row.iloc[j]):
                         party_name = v
                         break
 
-            current_shop, current_shop_type = clean_shop_name(party_name) if party_name else ("UNKNOWN", "REGULAR")
+            current_shop, current_shop_type = (
+                clean_shop_name(party_name) if party_name else ("UNKNOWN", "REGULAR")
+            )
 
-            # Bill date from invoice row
+            # Bill date — extracted from the invoice header row (source of truth)
             if date_col is not None and date_col < len(row):
                 current_bill_date = _parse_date(row.iloc[date_col])
             elif len(row) > 1:
@@ -193,10 +244,10 @@ def _parse_register(df, header_idx, qty_col, amt_col, rate_col, party_col, sku_c
 
             continue
 
-        # Product line: col0 blank, col1 is SKU name
+        # ── Product line: col0 blank, col1 is SKU name ────────────────────────
         col0_blank = _is_blank_val(col0)
-        col1 = row.iloc[1] if len(row) > 1 else None
-        col1_str = isinstance(col1, str) and col1.strip() and col1.strip().lower() != "nan"
+        col1       = row.iloc[1] if len(row) > 1 else None
+        col1_str   = isinstance(col1, str) and col1.strip() and col1.strip().lower() != "nan"
 
         if current_shop and col0_blank and col1_str:
             sku = ""
@@ -213,7 +264,7 @@ def _parse_register(df, header_idx, qty_col, amt_col, rate_col, party_col, sku_c
                 records.append(_make(
                     distributor_name, current_shop, current_shop_type,
                     sku, current_bill_no, current_bill_date,
-                    qty, rate, revenue, month, year
+                    qty, rate, revenue,
                 ))
 
     return records
@@ -224,16 +275,26 @@ def _parse_register(df, header_idx, qty_col, amt_col, rate_col, party_col, sku_c
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _find_header_row(df):
-    all_kw = QTY_KEYWORDS + AMT_KEYWORDS + PARTY_KEYWORDS + SKU_KEYWORDS + DATE_KEYWORDS + BILLNO_KEYWORDS + ["sr.", "sr"]
+    """
+    Scan the first 20 rows for the column-header row.
+    Handles merged / multi-row headers by merging the next row if it also
+    contains header keywords — so split two-row headers become one unified row.
+    """
+    all_kw = (
+        QTY_KEYWORDS + AMT_KEYWORDS + PARTY_KEYWORDS
+        + SKU_KEYWORDS + DATE_KEYWORDS + BILLNO_KEYWORDS
+        + ["sr.", "sr"]
+    )
     for i in range(min(20, len(df))):
-        row = df.iloc[i]
-        texts = [_str(v).lower() for v in row if isinstance(v, str) and v.strip()]
+        row    = df.iloc[i]
+        texts  = [_str(v).lower() for v in row if isinstance(v, str) and v.strip()]
         matches = sum(1 for t in texts if any(kw in t for kw in all_kw))
         if matches >= 2:
             merged = list(row)
+            # Peek at the next row — if it also looks like a sub-header, merge it in
             if i + 1 < len(df):
-                next_row = df.iloc[i + 1]
-                next_texts = [_str(v).lower() for v in next_row if isinstance(v, str) and v.strip()]
+                next_row    = df.iloc[i + 1]
+                next_texts  = [_str(v).lower() for v in next_row if isinstance(v, str) and v.strip()]
                 next_matches = sum(1 for t in next_texts if any(kw in t for kw in all_kw))
                 if next_matches >= 1:
                     for j, val in enumerate(next_row):
@@ -244,6 +305,11 @@ def _find_header_row(df):
 
 
 def _find_col(header_row, keywords, skip_keywords):
+    """
+    Return the column index whose header text matches any keyword
+    and does NOT match any skip keyword.
+    First match wins (left-to-right).
+    """
     if header_row is None:
         return None
     for i, val in enumerate(header_row):
@@ -258,8 +324,14 @@ def _find_col(header_row, keywords, skip_keywords):
 
 
 def _detect_pattern(df, header_idx):
+    """
+    Scan up to 30 rows after the header to determine format.
+    - First positive integer in col0  → REGISTER (Synergy-style)
+    - First shop-name row             → GROUPED  (Iceland-style)
+    Defaults to GROUPED if neither is found within the scan window.
+    """
     for i in range(header_idx + 1, min(header_idx + 30, len(df))):
-        row = df.iloc[i]
+        row  = df.iloc[i]
         col0 = row.iloc[0]
         if _is_pos_int(col0):
             return "REGISTER"
@@ -269,93 +341,167 @@ def _detect_pattern(df, header_idx):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Row helpers
+# Row / value helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _is_grand_total(row):
     return any(isinstance(v, str) and "grand total" in v.lower() for v in row)
 
+
 def _is_subtotal(row):
-    return any(isinstance(v, str) and v.strip().lower() in ("total", "sub total", "subtotal") for v in row)
+    return any(
+        isinstance(v, str) and v.strip().lower() in ("total", "sub total", "subtotal")
+        for v in row
+    )
+
 
 def _is_blank(row):
     return all(_is_blank_val(v) for v in row)
 
+
 def _is_blank_val(v):
-    if v is None: return True
-    if isinstance(v, float) and np.isnan(v): return True
-    if str(v).strip() in ("", "nan"): return True
+    if v is None:
+        return True
+    if isinstance(v, float) and np.isnan(v):
+        return True
+    if str(v).strip() in ("", "nan"):
+        return True
     return False
 
+
 def _is_shop_name_row(row):
+    """
+    True when col0 is a non-numeric string and ≥70 % of remaining columns are blank.
+    Used to identify party/shop group header rows in GROUPED format.
+    """
     col0 = row.iloc[0]
     if not isinstance(col0, str) or not col0.strip() or col0.strip().lower() == "nan":
         return False
     try:
         float(col0.strip())
-        return False
+        return False  # numeric string → not a shop name
     except (ValueError, TypeError):
         pass
-    others = list(row.iloc[1:])
+    others      = list(row.iloc[1:])
     blank_count = sum(1 for v in others if _is_blank_val(v))
     return blank_count >= max(1, len(others) * 0.7)
 
+
 def _is_pos_int(val):
-    if isinstance(val, (int, np.integer)) and val > 0: return True
-    if isinstance(val, float) and not np.isnan(val) and val > 0 and val == int(val): return True
+    """True for positive integers — used to detect Sr No / invoice sequence rows."""
+    if isinstance(val, (int, np.integer)) and val > 0:
+        return True
+    if isinstance(val, float) and not np.isnan(val) and val > 0 and val == int(val):
+        return True
     if isinstance(val, str):
         try:
             v = float(val.strip())
             return v > 0 and v == int(v)
-        except: pass
+        except Exception:
+            pass
     return False
 
+
 def _is_numeric_val(val):
-    if _is_blank_val(val): return False
+    if _is_blank_val(val):
+        return False
     if isinstance(val, (int, float, np.integer, np.floating)):
         return not (isinstance(val, float) and np.isnan(val))
     try:
         float(str(val).strip())
         return True
-    except: return False
+    except Exception:
+        return False
+
 
 def _parse_date(val) -> datetime.date | None:
-    if val is None or _is_blank_val(val): return None
-    if isinstance(val, (datetime.datetime, pd.Timestamp)):
+    """
+    Robustly parse a date value from any cell type.
+
+    Uses dayfirst=True to correctly handle Indian DD/MM/YYYY formats
+    (e.g. 19/12/2025 → Dec 19, not Jan 12).
+
+    Priority:
+      1. Already a datetime/Timestamp/date object → return .date() directly
+      2. String → pd.to_datetime(..., dayfirst=True, errors='coerce')
+      3. Fallback: return None (never raises)
+    """
+    if val is None or _is_blank_val(val):
+        return None
+    # Native Python / pandas date types — trust them directly
+    if isinstance(val, pd.Timestamp):
+        return val.date()
+    if isinstance(val, datetime.datetime):
         return val.date()
     if isinstance(val, datetime.date):
         return val
+    # String parsing — enforce dayfirst for Indian DD/MM/YYYY
     try:
-        return pd.to_datetime(str(val).strip()).date()
-    except: return None
+        parsed = pd.to_datetime(str(val).strip(), dayfirst=True, errors="coerce")
+        if pd.isna(parsed):
+            return None
+        return parsed.date()
+    except Exception:
+        return None
+
 
 def _str(val):
-    if _is_blank_val(val): return ""
+    if _is_blank_val(val):
+        return ""
     return str(val).strip()
+
 
 def _safe_int(val):
     try:
-        if _is_blank_val(val): return 0
+        if _is_blank_val(val):
+            return 0
         return int(float(str(val).strip()))
-    except: return 0
+    except Exception:
+        return 0
+
 
 def _safe_float(val):
     try:
-        if _is_blank_val(val): return 0.0
+        if _is_blank_val(val):
+            return 0.0
         return float(str(val).strip())
-    except: return 0.0
+    except Exception:
+        return 0.0
 
-def _make(distributor_name, shop_name, shop_type, sku_name, bill_no, bill_date, qty, rate, revenue, month, year):
+
+def _make(
+    distributor_name, shop_name, shop_type,
+    sku_name, bill_no, bill_date,
+    qty, rate, revenue,
+) -> dict:
+    """
+    Build a single raw record dict.
+
+    month and year are derived HERE from bill_date — this is the ONLY place
+    that sets these fields. No external month/year parameters are accepted.
+
+    Derivation hierarchy:
+      1. bill_date is a valid date  → month = bill_date.strftime("%B"), year = bill_date.year
+      2. bill_date is None          → month = None, year = None
+         (normalizer will retain None; analytics layer handles missing dates)
+    """
+    if bill_date is not None:
+        derived_month = bill_date.strftime("%B")   # e.g. "December", "January"
+        derived_year  = bill_date.year             # e.g. 2025, 2026
+    else:
+        derived_month = None
+        derived_year  = None
+
     return {
         "distributor_name": distributor_name,
-        "shop_name": shop_name,
-        "shop_type": shop_type,
-        "sku_name": sku_name,
-        "bill_no": bill_no,
-        "bill_date": bill_date.isoformat() if bill_date else None,
-        "qty": qty,
-        "rate": rate,
-        "revenue": round(revenue, 2),
-        "month": month,
-        "year": year,
+        "shop_name":        shop_name,
+        "shop_type":        shop_type,
+        "sku_name":         sku_name,
+        "bill_no":          bill_no,
+        "bill_date":        bill_date.isoformat() if bill_date else None,
+        "qty":              qty,
+        "rate":             rate,
+        "revenue":          round(revenue, 2),
+        "month":            derived_month,
+        "year":             derived_year,
     }

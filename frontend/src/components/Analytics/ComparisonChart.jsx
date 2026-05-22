@@ -8,6 +8,39 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, Legend, ResponsiveContainer, Cart
 
 const COLORS = ["#378ADD", "#1D9E75", "#D85A30", "#D4537E", "#BA7517", "#7F77DD"];
 
+const CustomTooltip = ({ active, payload, label }) => {
+  if (!active || !payload || !payload.length) return null;
+  const total = payload.reduce((sum, p) => sum + (p.value || 0), 0);
+  return (
+    <div style={{
+      background: "var(--color-background-primary)",
+      border: "0.5px solid var(--color-border-secondary)",
+      borderRadius: "var(--border-radius-md)",
+      fontSize: 13,
+      padding: "0.5rem 0.75rem",
+      maxWidth: 320,
+    }}>
+      <p style={{ margin: "0 0 0.5rem", fontWeight: 600, wordBreak: "break-word" }}>{label}</p>
+      {payload.map((p) => (
+        <div key={p.name} style={{ display: "flex", justifyContent: "space-between", gap: 24 }}>
+          <span style={{ color: p.fill }}>● {p.name}</span>
+          <span>₹{Number(p.value).toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+        </div>
+      ))}
+      <div style={{
+        borderTop: "0.5px solid var(--color-border-tertiary)",
+        marginTop: 6,
+        paddingTop: 6,
+        display: "flex",
+        justifyContent: "space-between",
+      }}>
+        <span style={{ fontWeight: 500 }}>Total</span>
+        <span style={{ fontWeight: 500 }}>₹{total.toLocaleString("en-IN", { minimumFractionDigits: 2 })}</span>
+      </div>
+    </div>
+  );
+};
+
 export default function ComparisonChart({ data = [], distributors = [], loading = false }) {
   if (loading) {
     return (
@@ -40,18 +73,7 @@ export default function ComparisonChart({ data = [], distributors = [], loading 
               tickLine={false}
               width={48}
             />
-            <Tooltip
-              formatter={(value, name) => [
-                `₹${Number(value).toLocaleString("en-IN", { minimumFractionDigits: 2 })}`,
-                name,
-              ]}
-              contentStyle={{
-                background: "var(--color-background-primary)",
-                border: "0.5px solid var(--color-border-secondary)",
-                borderRadius: "var(--border-radius-md)",
-                fontSize: 13,
-              }}
-            />
+            <Tooltip content={<CustomTooltip />} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
             {distributors.map((dist, i) => (
               <Bar key={dist} dataKey={dist} fill={COLORS[i % COLORS.length]} radius={[3, 3, 0, 0]} barSize={16} />

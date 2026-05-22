@@ -79,17 +79,23 @@ def normalize_records(
     raw_records: list,
     distributor_name: str,
     upload_id: str,
-    month,
-    year,
 ) -> list:
     """
     Normalize raw parser output into unified DB schema.
+
     - Drops records with qty == 0 AND revenue == 0
     - Excludes junk shops (Cash Sales, Unknown, etc.)
     - Fuzzy merges typo/casing variants ONLY within same distributor
     - Keeps different branches separate (different location suffix = different shop)
     - Keeps same shop served by two distributors as separate rows
     - Passes through SKU-level fields: sku_name, bill_no, bill_date, rate
+
+    DATE ARCHITECTURE:
+    month and year are taken directly from each record as set by the parser's _make().
+    No external month/year fallback is applied — if the parser could not derive a date
+    from a transaction's bill_date, month/year will be None for that record.
+    This ensures each record carries its own correct date bucket and aggregation
+    across mixed-month exports remains accurate.
     """
     seen_shops = {}  # (distributor, cleaned_name) -> canonical_name
     normalized = []
@@ -124,7 +130,7 @@ def normalize_records(
             "distributor_name": dist,
             "shop_name":        shop_name,
             "shop_type":        rec.get("shop_type") or "REGULAR",
-            # ── SKU-level fields (new) ──────────────────────────────
+            # ── SKU-level fields ────────────────────────────────────
             "sku_name":         str(rec.get("sku_name") or "UNKNOWN").strip(),
             "bill_no":          rec.get("bill_no"),
             "bill_date":        rec.get("bill_date"),
@@ -132,8 +138,11 @@ def normalize_records(
             # ───────────────────────────────────────────────────────
             "qty":              qty,
             "revenue":          round(revenue, 2),
-            "month":            rec.get("month") or month,
-            "year":             rec.get("year") or year,
+            # month/year come purely from the parser (derived from bill_date).
+            # No external fallback — None is intentionally preserved if bill_date
+            # was missing, so bad records are visible rather than silently misdated.
+            "month":            rec.get("month"),
+            "year":             rec.get("year"),
         })
 
     return normalized

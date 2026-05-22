@@ -17,9 +17,11 @@ function fmtRevLabel(val) {
   return `₹${val}`;
 }
 
-function CustomTooltip({ active, payload, label }) {
+function CustomTooltip({ active, payload }) {
   if (!active || !payload?.length) return null;
   const total = payload.reduce((s, p) => s + (p.value || 0), 0);
+  // Use full shop_name from the data row — not the truncated X-axis label
+  const fullName = payload[0]?.payload?.shop_name || "";
   return (
     <div style={{
       background: "var(--color-background-primary)",
@@ -28,8 +30,9 @@ function CustomTooltip({ active, payload, label }) {
       padding: "8px 14px",
       fontSize: 14,
       minWidth: 160,
+      maxWidth: 320,
     }}>
-      <p style={{ margin: "0 0 6px", fontWeight: 500 }}>{label}</p>
+      <p style={{ margin: "0 0 6px", fontWeight: 500, wordBreak: "break-word" }}>{fullName}</p>
       {payload.map((p) => (
         <p key={p.name} style={{ margin: "2px 0", color: "var(--color-text-secondary)", display: "flex", justifyContent: "space-between", gap: 16 }}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>

@@ -1,14 +1,17 @@
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Dashboard from "./pages/Dashboard";
 import Upload from "./pages/Upload";
 import UploadHistory from "./pages/UploadHistory";
 import Settings from "./pages/Settings";
+import ModernTradeAnalytics from "./pages/ModernTradeAnalytics";
+import { getDistributors, getSkus } from "./services/api";
 
 const NAV = [
-  { key: "dashboard",      label: "Dashboard",       icon: "chart-bar" },
-  { key: "upload",         label: "Upload file",      icon: "upload" },
-  { key: "upload-history", label: "Upload history",   icon: "history" },
-  { key: "settings",       label: "Settings",         icon: "settings" },
+  { key: "dashboard",      label: "Distributor Dashboard", icon: "chart-bar" },
+  { key: "modern-trade",   label: "Modern Trade",          icon: "building-store" },
+  { key: "upload",         label: "Upload file",           icon: "upload" },
+  { key: "upload-history", label: "Upload history",        icon: "history" },
+  { key: "settings",       label: "Settings",              icon: "settings" },
 ];
 
 function NavItem({ item, active, onClick }) {
@@ -40,12 +43,21 @@ function NavItem({ item, active, onClick }) {
 export default function App() {
   const [page, setPage] = useState("dashboard");
 
-  const pages = {
-    dashboard:       <Dashboard />,
-    upload:          <Upload />,
-    "upload-history": <UploadHistory />,
-    settings:        <Settings />,
-  };
+  // ── Shared distributor + SKU list ────────────────────────────────────────
+  // Lifted here so Dashboard and UploadHistory both see the same up-to-date list.
+  // Call refreshDistributors() after any delete or rename to keep everything in sync.
+  const [distributors, setDistributors] = useState([]);
+  const [skus, setSkus]                 = useState([]);
+
+  const refreshDistributors = useCallback(() => {
+    getDistributors()
+      .then((d) => setDistributors(d.map((x) => x.distributor_name)))
+      .catch(() => {});
+    getSkus().then(setSkus).catch(() => {});
+  }, []);
+
+  // Load once on mount
+  useEffect(() => { refreshDistributors(); }, [refreshDistributors]);
 
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "var(--color-background-tertiary, #f9f9f8)" }}>
@@ -80,9 +92,21 @@ export default function App() {
         ))}
       </nav>
 
-      {/* Main content */}
+      {/* Main content — conditional render so pages remount on navigation */}
       <main style={{ flex: 1, overflowY: "auto" }}>
-        {pages[page]}
+        {page === "dashboard" && (
+          <Dashboard
+            distributors={distributors}
+            skus={skus}
+            onDistributorsChange={refreshDistributors}
+          />
+        )}
+        {page === "modern-trade"    && <ModernTradeAnalytics />}
+        {page === "upload"          && <Upload onUploadSuccess={refreshDistributors} />}
+        {page === "upload-history"  && (
+          <UploadHistory onDistributorsChange={refreshDistributors} />
+        )}
+        {page === "settings"        && <Settings />}
       </main>
     </div>
   );
