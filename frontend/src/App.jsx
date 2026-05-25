@@ -7,7 +7,7 @@ import ModernTradeAnalytics from "./pages/ModernTradeAnalytics";
 import { getDistributors, getSkus } from "./services/api";
 
 const NAV = [
-  { key: "dashboard",      label: "Distributor Dashboard", icon: "chart-bar" },
+  { key: "dashboard",      label: "Secondary Sales Distributor Dashboard", icon: "chart-bar" },
   { key: "modern-trade",   label: "Modern Trade",          icon: "building-store" },
   { key: "upload",         label: "Upload file",           icon: "upload" },
   { key: "upload-history", label: "Upload history",        icon: "history" },

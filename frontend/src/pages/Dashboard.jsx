@@ -79,7 +79,7 @@ export default function Dashboard({ distributors = [], skus = [], onDistributors
       {/* Header + filters */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "2rem", flexWrap: "wrap", gap: 12 }}>
         <div>
-          <p style={{ margin: 0, fontWeight: 600, fontSize: 24 }}>Distributor Dashboard</p>
+          <p style={{ margin: 0, fontWeight: 600, fontSize: 24 }}>Secondary Sales Distributor Dashboard</p>
           <p style={{ margin: "4px 0 0", fontSize: 15, color: "var(--color-text-secondary)" }}>
             Shop-wise sales analytics across all distributors
           </p>
