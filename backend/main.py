@@ -13,6 +13,7 @@ from analytics.aggregator import (
     get_top_shops_sku_breakdown,
 )
 from exports.exporter import export_to_excel, export_audit_csv
+from analytics.aggregator import get_distributor_mom
 
 app = FastAPI(title="Excel Intelligence API", version="1.0.0")
 
@@ -312,8 +313,19 @@ def analytics_shops(
 def analytics_mom_trend(
     distributor: str = Query(None),
     sku: str = Query(None),
+    month: str = Query(None),
+    year: int = Query(None),
 ):
-    return get_mom_trend(distributor=distributor, sku=sku)
+    return get_mom_trend(distributor=distributor, sku=sku, month=month, year=year)
+    
+@app.get("/analytics/distributor-mom")
+def analytics_distributor_mom(
+    distributor: str = Query(None),
+    sku: str = Query(None),
+    month: str = Query(None),
+    year: int = Query(None),
+):
+    return get_distributor_mom(distributor=distributor, sku=sku, month=month, year=year)
 
 
 @app.get("/analytics/top-shops")
@@ -703,3 +715,183 @@ def mt_list_uploads(chain: str = Query(None)):
     if chain:
         q = q.eq("chain_name", chain)
     return q.execute().data
+
+
+# =============================================================================
+# MARGIN — parse file, detect conflicts, save to shop_margins
+# =============================================================================
+
+def _parse_margin_file(file_bytes: bytes, filename: str, distributor_name: str) -> dict:
+    """
+    Parse a distributor sales file and extract shop_name → margin % mapping.
+
+    Returns:
+      {
+        "clean":     [{ shop_name, margin_pct }],   # shops with one consistent margin
+        "conflicts": [{ shop_name, values: [25, 30] }],  # shops with 2+ different margins
+      }
+    """
+    import pandas as pd
+
+    ext = filename.rsplit(".", 1)[-1].lower()
+    if ext == "xls":
+        df = pd.read_excel(io.BytesIO(file_bytes), sheet_name=0, engine="xlrd", header=None)
+    else:
+        import openpyxl as _ox
+        wb = _ox.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        df = pd.DataFrame(rows)
+
+    shop_margins: dict[str, set] = {}
+
+    for i, row in df.iterrows():
+        if i < 11:          # skip header rows
+            continue
+        margin_raw = row[0]
+        party_raw  = row[5]
+
+        if pd.isna(margin_raw) or pd.isna(party_raw):
+            continue
+        party = str(party_raw).strip()
+        if not party:
+            continue
+        try:
+            margin = float(margin_raw)
+        except (ValueError, TypeError):
+            continue
+
+        shop_margins.setdefault(party, set()).add(margin)
+
+    clean     = []
+    conflicts = []
+
+    for shop, values in shop_margins.items():
+        if len(values) == 1:
+            clean.append({
+                "shop_name":        shop,
+                "distributor_name": distributor_name,
+                "margin_pct":       round(list(values)[0], 2),
+            })
+        else:
+            conflicts.append({
+                "shop_name": shop,
+                "values":    sorted(values),
+            })
+
+    return {"clean": clean, "conflicts": conflicts}
+
+
+@app.post("/margins/preview")
+async def margins_preview(
+    file:             UploadFile = File(...),
+    distributor_name: str        = Form(...),
+):
+    """
+    Step 1 — Parse file, return clean margins + conflicts.
+    Frontend shows a popup for conflicts so the user can enter the correct value.
+    Nothing is saved to DB yet.
+    """
+    file_bytes = await file.read()
+    filename   = file.filename or "margin.xls"
+
+    result = _parse_margin_file(file_bytes, filename, distributor_name.strip().upper())
+
+    return {
+        "distributor_name": distributor_name.strip().upper(),
+        "clean_count":      len(result["clean"]),
+        "conflict_count":   len(result["conflicts"]),
+        "clean":            result["clean"],
+        "conflicts":        result["conflicts"],
+    }
+
+
+@app.post("/margins/save")
+async def margins_save(body: dict):
+    """
+    Step 2 — Save resolved margins to shop_margins table.
+    Body:
+      {
+        "distributor_name": "SYNERGY",
+        "margins": [
+          { "shop_name": "SHOP A", "margin_pct": 30 },
+          { "shop_name": "SHOP B", "margin_pct": 25 },
+          ...
+        ]
+      }
+    Uses upsert on (shop_name, distributor_name) so re-uploads update existing rows.
+    """
+    sb               = get_supabase()
+    distributor_name = str(body.get("distributor_name", "")).strip().upper()
+    margins          = body.get("margins", [])
+
+    if not distributor_name:
+        raise HTTPException(status_code=400, detail="distributor_name is required")
+    if not margins:
+        raise HTTPException(status_code=400, detail="No margins provided")
+
+    rows = []
+    for m in margins:
+        shop = str(m.get("shop_name", "")).strip()
+        try:
+            pct = round(float(m["margin_pct"]), 2)
+        except (KeyError, ValueError, TypeError):
+            continue
+        if not shop:
+            continue
+        rows.append({
+            "shop_name":        shop,
+            "distributor_name": distributor_name,
+            "margin_pct":       pct,
+            "updated_at":       "now()",
+        })
+
+    if not rows:
+        raise HTTPException(status_code=400, detail="No valid margin rows to save")
+
+    sb.table("shop_margins").upsert(
+        rows,
+        on_conflict="shop_name,distributor_name"
+    ).execute()
+
+    return {"saved": len(rows), "distributor_name": distributor_name}
+
+
+@app.get("/margins")
+def margins_list(distributor: str = Query(None)):
+    """Return all shop margins, optionally filtered by distributor."""
+    sb = get_supabase()
+    q  = sb.table("shop_margins").select("*").order("shop_name")
+    if distributor:
+        q = q.eq("distributor_name", distributor)
+    return q.execute().data
+@app.post("/margins/save-one")
+def margins_save_one(body: dict):
+    sb = get_supabase()
+ 
+    shop_name        = (body.get("shop_name") or "").strip()
+    distributor_name = (body.get("distributor_name") or "").strip()
+    margin_pct       = body.get("margin_pct")
+ 
+    if not shop_name or not distributor_name:
+        raise HTTPException(status_code=400, detail="shop_name and distributor_name are required")
+    if margin_pct is None:
+        raise HTTPException(status_code=400, detail="margin_pct is required")
+    try:
+        margin_pct = float(margin_pct)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="margin_pct must be a number")
+    if not (0 <= margin_pct <= 100):
+        raise HTTPException(status_code=400, detail="margin_pct must be between 0 and 100")
+ 
+    sb.table("shop_margins").upsert(
+        {
+            "shop_name":        shop_name,
+            "distributor_name": distributor_name,
+            "margin_pct":       margin_pct,
+            "updated_at":       "now()",
+        },
+        on_conflict="shop_name,distributor_name",
+    ).execute()
+ 
+    return {"ok": True, "shop_name": shop_name, "distributor_name": distributor_name, "margin_pct": margin_pct}

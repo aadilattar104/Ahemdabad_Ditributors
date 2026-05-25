@@ -109,14 +109,16 @@ def get_shops(month: str | None = None, year: int | None = None, distributor: st
     return sorted(shops, key=lambda x: x["revenue"], reverse=True)
 
 
-def get_mom_trend(distributor: str | None = None, sku: str | None = None) -> list[dict]:
+def get_mom_trend(distributor=None, sku=None, month=None, year=None):
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, month, year, qty, revenue")
     if distributor: query = query.eq("distributor_name", distributor)
+    if month:       query = query.eq("month", month)
+    if year:        query = query.eq("year", year)
     query = _apply_sku_filter(query, sku)
     rows = query.execute().data
-
     trend_map: dict[tuple, dict] = {}
+
     for r in rows:
         key = (r["year"], r["month"])
         if key not in trend_map:
@@ -244,6 +246,38 @@ def get_top_shops_sku_breakdown(
     ]
 
     return {"by_revenue": by_revenue, "by_qty": by_qty}
+def get_distributor_mom(distributor=None, sku=None, month=None, year=None):
+    sb = get_supabase()
+    query = sb.table("sales_records").select("distributor_name, month, year, qty, revenue")
+    if distributor: query = query.eq("distributor_name", distributor)
+    if month:       query = query.eq("month", month)
+    if year:        query = query.eq("year", year)
+    query = _apply_sku_filter(query, sku)
+    rows = query.execute().data
+
+    agg: dict[tuple, dict] = {}
+    for r in rows:
+        key = (r["distributor_name"], r["year"], r["month"])
+        if key not in agg:
+            agg[key] = {
+                "distributor_name": r["distributor_name"],
+                "month":   r["month"],
+                "year":    r["year"],
+                "revenue": 0.0,
+                "qty":     0,
+            }
+        agg[key]["revenue"] += r["revenue"]
+        agg[key]["qty"]     += r["qty"]
+
+    result = list(agg.values())
+    for r in result:
+        r["revenue"] = round(r["revenue"], 2)
+
+    return sorted(result, key=lambda x: (
+        x["year"] or 0,
+        _month_order(x["month"]),
+        x["distributor_name"],
+    ))
 
 
 MONTH_ORDER = ["January","February","March","April","May","June","July","August","September","October","November","December"]

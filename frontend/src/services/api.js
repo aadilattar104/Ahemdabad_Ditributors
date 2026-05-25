@@ -17,7 +17,7 @@ function qs(params = {}) {
   return s ? "?" + s : "";
 }
 
-// ─── Distributor upload (UNCHANGED) ──────────────────────────────────────────
+// ─── Distributor upload ───────────────────────────────────────────────────────
 export async function uploadFile(file, distributorName) {
   const form = new FormData();
   form.append("file", file);
@@ -25,7 +25,7 @@ export async function uploadFile(file, distributorName) {
   return request("/upload", { method: "POST", body: form });
 }
 
-// ─── Modern Trade upload (UNCHANGED) ─────────────────────────────────────────
+// ─── Modern Trade upload ──────────────────────────────────────────────────────
 export async function uploadModernTrade(file, chainName) {
   const form = new FormData();
   form.append("file", file);
@@ -33,20 +33,19 @@ export async function uploadModernTrade(file, chainName) {
   return request("/upload/modern-trade", { method: "POST", body: form });
 }
 
-// ─── Uploads history (UNCHANGED) ─────────────────────────────────────────────
+// ─── Uploads history ─────────────────────────────────────────────────────────
 export async function getUploads()          { return request("/uploads"); }
 export async function getUploadById(id)     { return request(`/uploads/${id}`); }
 
-// ─── Delete upload (NEW) ─────────────────────────────────────────────────────
+// ─── Delete upload ────────────────────────────────────────────────────────────
 export async function deleteUpload(uploadId) {
   return request(`/uploads/${uploadId}`, { method: "DELETE" });
 }
 
-// ─── Distributors (UNCHANGED) ────────────────────────────────────────────────
+// ─── Distributors ─────────────────────────────────────────────────────────────
 export async function getDistributors()     { return request("/distributors"); }
 
 // ─── Rename distributor globally ─────────────────────────────────────────────
-// Uses POST to avoid FastAPI conflict with PATCH /distributors/{dist_id}
 export async function renameDistributor(oldName, newName) {
   return request("/distributors/rename", {
     method: "POST",
@@ -55,10 +54,10 @@ export async function renameDistributor(oldName, newName) {
   });
 }
 
-// ─── SKUs (UNCHANGED) ────────────────────────────────────────────────────────
+// ─── SKUs ─────────────────────────────────────────────────────────────────────
 export async function getSkus()             { return request("/analytics/skus"); }
 
-// ─── Analytics — distributor (UNCHANGED) ─────────────────────────────────────
+// ─── Analytics ────────────────────────────────────────────────────────────────
 export async function getOverview(params = {})             { return request(`/analytics/overview${qs(params)}`); }
 export async function getShops(params = {})                { return request(`/analytics/shops${qs(params)}`); }
 export async function getMoMTrend(params = {})             { return request(`/analytics/mom-trend${qs(params)}`); }
@@ -67,21 +66,35 @@ export async function getTopShopsByQty(params = {})        { return request(`/an
 export async function getRecurringShops(params = {})       { return request(`/analytics/recurring-shops${qs(params)}`); }
 export async function getTopShopsSkuBreakdown(params = {}) { return request(`/analytics/top-shops-sku-breakdown${qs(params)}`); }
 
-// ─── Export (UNCHANGED) ──────────────────────────────────────────────────────
+// ─── Distributor MoM grouped (NEW) ───────────────────────────────────────────
+export async function getDistributorMoM(params = {}) {
+  return request(`/analytics/distributor-mom${qs(params)}`);
+}
+
+// ─── Export ───────────────────────────────────────────────────────────────────
 export function getExcelExportUrl(params = {}) {
   return `${BASE_URL}/export/excel${qs(params)}`;
 }
 
-// ─── Modern Trade — chains & filters (UNCHANGED) ─────────────────────────────
+// ─── Modern Trade — chains & filters ─────────────────────────────────────────
 export async function getMtChains()                        { return request("/mt/chains"); }
 export async function getMtStores(params = {})             { return request(`/mt/analytics/stores${qs(params)}`); }
 export async function getMtMonths(params = {})             { return request(`/mt/analytics/months${qs(params)}`); }
 export async function getMtSkus(params = {})               { return request(`/mt/analytics/skus${qs(params)}`); }
 
-// ─── Modern Trade — chart data (UNCHANGED) ───────────────────────────────────
+// ─── Modern Trade — chart data ────────────────────────────────────────────────
 export async function getMtRevenue(params = {})            { return request(`/mt/analytics/revenue${qs(params)}`); }
 export async function getMtQty(params = {})                { return request(`/mt/analytics/qty${qs(params)}`); }
 export async function getMtSoh(params = {})                { return request(`/mt/analytics/soh${qs(params)}`); }
 
-// ─── Modern Trade — upload history (UNCHANGED) ───────────────────────────────
+// ─── Modern Trade — upload history ───────────────────────────────────────────
 export async function getMtUploads(params = {})            { return request(`/mt/uploads${qs(params)}`); }
+export async function getMargins(params = {})              { return request(`/margins${qs(params)}`); }
+// ─── Save single margin inline (NEW) ─────────────────────────────────────────
+export async function saveMargin(shopName, distributorName, marginPct) {
+  return request("/margins/save-one", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ shop_name: shopName, distributor_name: distributorName, margin_pct: marginPct }),
+  });
+}

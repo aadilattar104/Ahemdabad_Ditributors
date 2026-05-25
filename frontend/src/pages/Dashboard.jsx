@@ -5,11 +5,13 @@ import ShopTable from "../components/Analytics/ShopTable";
 import TopShopsChart from "../components/Analytics/TopShopsChart";
 import TopShopsByQtyChart from "../components/Analytics/TopShopsByQtyChart";
 import MoMTrendChart from "../components/Analytics/MoMTrendChart";
+import DistributorMoMChart from "../components/Analytics/DistributorMoMChart";
 import FilterBar from "../components/Filters/FilterBar";
 import RecurringShopsTable from "../components/RecurringShops/RecurringShopsTable";
 import {
   getOverview, getShops, getMoMTrend, getTopShops,
   getTopShopsByQty, getRecurringShops, getTopShopsSkuBreakdown,
+  getDistributorMoM, getMargins,
 } from "../services/api";
 
 // Props:
@@ -25,6 +27,8 @@ export default function Dashboard({ distributors = [], skus = [], onDistributors
   const [topQty, setTopQty]       = useState([]);
   const [recurring, setRecurring] = useState([]);
   const [skuBreakdown, setSkuBreakdown] = useState({ by_revenue: [], by_qty: [] });
+  const [distMoM, setDistMoM]     = useState([]);
+  const [margins, setMargins]     = useState([]);
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState("");
 
@@ -33,7 +37,12 @@ export default function Dashboard({ distributors = [], skus = [], onDistributors
     if (filters.distributor && !distributors.includes(filters.distributor)) {
       setFilters((prev) => ({ ...prev, distributor: "" }));
     }
-  }, [distributors]); // runs every time App pushes a fresh list down
+  }, [distributors]);
+
+  // Fetch margins once on mount — not tied to filters (margins are global per shop)
+  useEffect(() => {
+    getMargins().then(setMargins).catch(() => setMargins([]));
+  }, []);
 
   // Reload analytics when filters change
   useEffect(() => {
@@ -48,8 +57,9 @@ export default function Dashboard({ distributors = [], skus = [], onDistributors
       getTopShopsByQty({ ...p, limit: 10 }),
       getRecurringShops(p),
       getTopShopsSkuBreakdown({ ...p, limit: 10 }),
+      getDistributorMoM(p),
     ])
-      .then(([ov, sh, tr, tRev, tQty, rec, skuBd]) => {
+      .then(([ov, sh, tr, tRev, tQty, rec, skuBd, dMoM]) => {
         setOverview(ov);
         setShops(sh);
         setTrend(tr);
@@ -57,6 +67,7 @@ export default function Dashboard({ distributors = [], skus = [], onDistributors
         setTopQty(tQty);
         setRecurring(rec);
         setSkuBreakdown(skuBd || { by_revenue: [], by_qty: [] });
+        setDistMoM(dMoM || []);
       })
       .catch((e) => setError(e.message || "Failed to load data"))
       .finally(() => setLoading(false));
@@ -84,11 +95,15 @@ export default function Dashboard({ distributors = [], skus = [], onDistributors
 
       <div style={{ display: "flex", flexDirection: "column", gap: "2rem" }}>
         <OverviewCards data={overview} loading={loading} />
+
+        {/* ── NEW: Distributor MoM grouped bar chart ── */}
+        <DistributorMoMChart data={distMoM} loading={loading} />
+
         <TopShopsChart data={topRev} skuData={skuBreakdown.by_revenue} loading={loading} />
         <TopShopsByQtyChart data={topQty} skuData={skuBreakdown.by_qty} loading={loading} />
         <MoMTrendChart data={trend} loading={loading} />
         <DistributorTable rows={overview?.by_distributor || []} loading={loading} />
-        <ShopTable rows={shops} loading={loading} />
+        <ShopTable rows={shops} loading={loading} margins={margins} onMarginsChange={() => getMargins().then(setMargins).catch(() => {})} />
         <RecurringShopsTable rows={recurring} loading={loading} />
       </div>
     </div>
