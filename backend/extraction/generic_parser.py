@@ -33,6 +33,7 @@ from .shop_name_cleaner import clean_shop_name
 
 QTY_KEYWORDS    = ["qty", "quantity", "units", "pcs"]
 AMT_KEYWORDS    = ["product amount", "prod amt", "net amount", "net amt", "amount", "value"]
+TAXABLE_KW      = ["taxable @ 100%", "taxable@100%"]
 AMT_SKIP        = ["bill amt", "gst", "igst", "cgst", "sgst", "tax", "total amt", "bill amount"]
 RATE_KEYWORDS   = ["rate", "price", "mrp"]
 PARTY_KEYWORDS  = ["party name", "party", "customer name", "customer", "shop name", "retailer"]
@@ -69,6 +70,18 @@ def parse_generic(
     sku_col    = _find_col(header_row, SKU_KEYWORDS,    [])
     date_col   = _find_col(header_row, DATE_KEYWORDS,   [])
     billno_col = _find_col(header_row, BILLNO_KEYWORDS, [])
+
+    # Detect Pattern C — Mumbai Register (has Taxable @ 100% and Customer Name columns)
+    taxable_col = _find_col(header_row, TAXABLE_KW, [])
+    margin_col  = _find_col(header_row, ["margin%", "margin %", "margin"], ["retailor", "retailer"])
+
+    if taxable_col is not None:
+        return _parse_mumbai_register(
+            df, header_idx,
+            party_col, sku_col, date_col, billno_col,
+            qty_col, taxable_col, margin_col,
+            distributor_name,
+        )
 
     pattern = _detect_pattern(df, header_idx)
 
@@ -271,6 +284,77 @@ def _parse_register(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# PATTERN C: Mumbai flat register (Vidhaata / Taxable @ 100% format)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_mumbai_register(
+    df, header_idx,
+    party_col, sku_col, date_col, billno_col,
+    qty_col, taxable_col, margin_col,
+    distributor_name,
+):
+    """
+    Parse Mumbai flat register format (e.g. Vidhaata Ventures LLP).
+
+    Structure: one row per SKU per invoice — completely flat, no grouping rows.
+    Header row identifies: Date | Voucher No | Customer Name | Particulars |
+                           Quantity | Margin% | Taxable @ 100%
+
+    Revenue = Taxable @ 100% column.
+    City    = "Mumbai" (hardcoded for this format).
+    Margin% is extracted and returned per row for upsert into shop_margins.
+    """
+    records = []
+
+    for i in range(header_idx + 1, len(df)):
+        row = df.iloc[i]
+
+        if _is_grand_total(row):
+            break
+        if _is_blank(row):
+            continue
+        if _is_subtotal(row):
+            continue
+
+        # Skip rows where first col is a string header / label
+        col0 = row.iloc[0]
+        if isinstance(col0, str) and col0.strip() and not _is_numeric_val(col0):
+            # Could be a date — pandas sometimes reads dates as strings
+            parsed = _parse_date(col0)
+            if parsed is None:
+                continue  # skip label rows
+
+        # Extract fields
+        bill_date  = _parse_date(row.iloc[date_col])   if date_col   is not None else None
+        bill_no    = _str(row.iloc[billno_col])         if billno_col is not None else None
+        shop_raw   = _str(row.iloc[party_col])          if party_col  is not None else ""
+        sku        = _str(row.iloc[sku_col])            if sku_col    is not None else ""
+        qty        = _safe_int(row.iloc[qty_col])       if qty_col    is not None else 0
+        revenue    = _safe_float(row.iloc[taxable_col])
+        margin_pct = _safe_float(row.iloc[margin_col])  if margin_col is not None else None
+
+        if not shop_raw or not sku:
+            continue
+        if qty == 0 and revenue == 0.0:
+            continue
+
+        from .shop_name_cleaner import clean_shop_name
+        shop_name, shop_type = clean_shop_name(shop_raw)
+
+        rec = _make(
+            distributor_name, shop_name, shop_type,
+            sku, bill_no, bill_date,
+            qty, None, revenue,
+        )
+        rec["city"]       = "Mumbai"
+        rec["margin_pct"] = round(margin_pct * 100, 2) if margin_pct and margin_pct < 1 else (round(margin_pct, 2) if margin_pct else None)
+
+        records.append(rec)
+
+    return records
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Header detection
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -289,7 +373,7 @@ def _find_header_row(df):
         row    = df.iloc[i]
         texts  = [_str(v).lower() for v in row if isinstance(v, str) and v.strip()]
         matches = sum(1 for t in texts if any(kw in t for kw in all_kw))
-        if matches >= 2:
+        if matches >= 3:
             merged = list(row)
             # Peek at the next row — if it also looks like a sub-header, merge it in
             if i + 1 < len(df):

@@ -18,9 +18,23 @@ _SKU_REVERSE: dict[str, list[str]] = {}
 for _raw, _canonical in _SKU_ALIASES.items():
     _SKU_REVERSE.setdefault(_canonical, []).append(_raw)
 
+MONTH_ORDER = ["January", "February", "March", "April", "May", "June",
+               "July", "August", "September", "October", "November", "December"]
+
+
+def _month_order(month: str | None) -> int:
+    if not month:
+        return 99
+    try:
+        return MONTH_ORDER.index(month)
+    except ValueError:
+        return 99
+
+
 def _norm_sku(name: str | None) -> str:
     raw = (name or "").strip()
     return _SKU_ALIASES.get(raw, raw)
+
 
 def _apply_sku_filter(query, sku: str | None):
     """Apply SKU filter expanding canonical names to all raw DB variants."""
@@ -32,12 +46,13 @@ def _apply_sku_filter(query, sku: str | None):
     return query.eq("sku_name", sku)
 
 
-def get_overview(month: str | None = None, year: int | None = None, distributor: str | None = None, sku: str | None = None) -> dict:
+def get_overview(month: str | None = None, year: int | None = None, distributor: str | None = None, sku: str | None = None, city: str | None = None) -> dict:
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, shop_name, qty, revenue")
     if month:       query = query.eq("month", month)
     if year:        query = query.eq("year", year)
     if distributor: query = query.eq("distributor_name", distributor)
+    if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku)
     rows = query.execute().data
 
@@ -74,12 +89,13 @@ def get_overview(month: str | None = None, year: int | None = None, distributor:
     }
 
 
-def get_shops(month: str | None = None, year: int | None = None, distributor: str | None = None, sku: str | None = None) -> list[dict]:
+def get_shops(month: str | None = None, year: int | None = None, distributor: str | None = None, sku: str | None = None, city: str | None = None) -> list[dict]:
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, shop_name, shop_type, qty, revenue, month, year, bill_no")
     if month:       query = query.eq("month", month)
     if year:        query = query.eq("year", year)
     if distributor: query = query.eq("distributor_name", distributor)
+    if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku)
     rows = query.execute().data
 
@@ -109,12 +125,13 @@ def get_shops(month: str | None = None, year: int | None = None, distributor: st
     return sorted(shops, key=lambda x: x["revenue"], reverse=True)
 
 
-def get_mom_trend(distributor=None, sku=None, month=None, year=None):
+def get_mom_trend(distributor=None, sku=None, month=None, year=None, city=None):
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, month, year, qty, revenue")
     if distributor: query = query.eq("distributor_name", distributor)
     if month:       query = query.eq("month", month)
     if year:        query = query.eq("year", year)
+    if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku)
     rows = query.execute().data
     trend_map: dict[tuple, dict] = {}
@@ -132,12 +149,12 @@ def get_mom_trend(distributor=None, sku=None, month=None, year=None):
     return sorted(trend, key=lambda x: (x["year"] or 0, _month_order(x["month"])))
 
 
-def get_top_shops(month: str | None = None, year: int | None = None, distributor: str | None = None, sku: str | None = None, limit: int = 10) -> list[dict]:
-    return get_shops(month=month, year=year, distributor=distributor, sku=sku)[:limit]
+def get_top_shops(month: str | None = None, year: int | None = None, distributor: str | None = None, sku: str | None = None, city: str | None = None, limit: int = 10) -> list[dict]:
+    return get_shops(month=month, year=year, distributor=distributor, sku=sku, city=city)[:limit]
 
 
-def get_top_shops_by_qty(month: str | None = None, year: int | None = None, distributor: str | None = None, sku: str | None = None, limit: int = 10) -> list[dict]:
-    shops = get_shops(month=month, year=year, distributor=distributor, sku=sku)
+def get_top_shops_by_qty(month: str | None = None, year: int | None = None, distributor: str | None = None, sku: str | None = None, city: str | None = None, limit: int = 10) -> list[dict]:
+    shops = get_shops(month=month, year=year, distributor=distributor, sku=sku, city=city)
     return sorted(shops, key=lambda x: x["qty"], reverse=True)[:limit]
 
 
@@ -147,7 +164,7 @@ def get_skus() -> list[str]:
     return sorted({_norm_sku(r["sku_name"]) for r in rows if r.get("sku_name")})
 
 
-def get_recurring_shops(month: str | None = None, year: int | None = None, distributor: str | None = None, sku: str | None = None) -> list[dict]:
+def get_recurring_shops(month: str | None = None, year: int | None = None, distributor: str | None = None, sku: str | None = None, city: str | None = None) -> list[dict]:
     """
     Returns shops that placed orders on multiple different dates in the same month.
     Each row: shop_name, distributor_name, sku_name, bill_date, qty, revenue, bill_no
@@ -160,6 +177,7 @@ def get_recurring_shops(month: str | None = None, year: int | None = None, distr
     if month:       query = query.eq("month", month)
     if year:        query = query.eq("year", year)
     if distributor: query = query.eq("distributor_name", distributor)
+    if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku)
     rows = query.execute().data
 
@@ -185,6 +203,7 @@ def get_top_shops_sku_breakdown(
     year: int | None = None,
     distributor: str | None = None,
     sku: str | None = None,
+    city: str | None = None,
     limit: int = 10,
 ) -> dict:
     """
@@ -211,6 +230,7 @@ def get_top_shops_sku_breakdown(
     if month:       query = query.eq("month", month)
     if year:        query = query.eq("year", year)
     if distributor: query = query.eq("distributor_name", distributor)
+    if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku)
     rows = query.execute().data
 
@@ -246,12 +266,15 @@ def get_top_shops_sku_breakdown(
     ]
 
     return {"by_revenue": by_revenue, "by_qty": by_qty}
-def get_distributor_mom(distributor=None, sku=None, month=None, year=None):
+
+
+def get_distributor_mom(distributor=None, sku=None, month=None, year=None, city=None):
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, month, year, qty, revenue")
     if distributor: query = query.eq("distributor_name", distributor)
     if month:       query = query.eq("month", month)
     if year:        query = query.eq("year", year)
+    if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku)
     rows = query.execute().data
 
@@ -280,9 +303,171 @@ def get_distributor_mom(distributor=None, sku=None, month=None, year=None):
     ))
 
 
-MONTH_ORDER = ["January","February","March","April","May","June","July","August","September","October","November","December"]
+def get_projection(distributor: str | None = None) -> dict:
+    """
+    Weighted moving average projection for revenue and qty.
 
-def _month_order(month: str | None) -> int:
-    if not month: return 99
-    try: return MONTH_ORDER.index(month)
-    except ValueError: return 99
+    Logic:
+      - Fetch all monthly totals (per SKU) from sales_records
+      - Sort months chronologically
+      - Latest completed month = "current month" (April 2026 in current data)
+      - Projected next month  = w1*M0 + w2*M-1 + w3*M-2  (w1=0.5, w2=0.3, w3=0.2)
+      - Projected month after = w1*proj_next + w2*M0 + w3*M-1
+
+    Returns:
+    {
+      "current_month":  { month, year, revenue, qty },
+      "prev_month":     { month, year, revenue, qty },
+      "proj_next":      { month, year, revenue, qty },          # e.g. May 2026
+      "proj_after":     { month, year, revenue, qty },          # e.g. Jun 2026
+      "mom_rev_pct":    float,   # % change current vs prev revenue
+      "mom_qty_pct":    float,   # % change current vs prev qty
+      "by_sku": [
+        {
+          sku_name,
+          m2_revenue, m2_qty,            # 3 months ago
+          m1_revenue, m1_qty,            # 2 months ago
+          m0_revenue, m0_qty,            # latest (current) month
+          proj_next_revenue, proj_next_qty,
+          proj_after_revenue, proj_after_qty,
+          m2_label, m1_label, m0_label,
+          proj_next_label, proj_after_label,
+        },
+        ...
+      ]
+    }
+    """
+    sb = get_supabase()
+    query = sb.table("sales_records").select("sku_name, month, year, qty, revenue")
+    if distributor:
+        query = query.eq("distributor_name", distributor)
+    rows = query.execute().data
+
+    # ── Helper functions ─────────────────────────────────────────────────────
+    def sort_key(y, m):
+        try:
+            return y * 100 + MONTH_ORDER.index(m)
+        except Exception:
+            return 0
+
+    def next_month(y, m):
+        idx = MONTH_ORDER.index(m)
+        if idx == 11:
+            return y + 1, MONTH_ORDER[0]
+        return y, MONTH_ORDER[idx + 1]
+
+    def month_label(y, m):
+        return f"{m[:3]} {str(y)[2:]}"
+
+    # ── Aggregate totals per (year, month) and per (year, month, sku) ──────
+    # Total per month
+    month_totals: dict[tuple, dict] = {}
+    # Per SKU per month
+    sku_month: dict[tuple, dict] = {}
+
+    for r in rows:
+        sku  = _norm_sku(r.get("sku_name"))
+        mo   = r["month"]
+        yr   = r["year"]
+        rev  = r["revenue"] or 0
+        qty  = r["qty"] or 0
+
+        # totals
+        k = (yr, mo)
+        if k not in month_totals:
+            month_totals[k] = {"year": yr, "month": mo, "revenue": 0.0, "qty": 0}
+        month_totals[k]["revenue"] += rev
+        month_totals[k]["qty"]     += qty
+
+        # by sku
+        sk = (yr, mo, sku)
+        if sk not in sku_month:
+            sku_month[sk] = {"year": yr, "month": mo, "sku_name": sku, "revenue": 0.0, "qty": 0}
+        sku_month[sk]["revenue"] += rev
+        sku_month[sk]["qty"]     += qty
+
+    # ── Sort months chronologically ──────────────────────────────────────────
+    sorted_months = sorted(month_totals.keys(), key=lambda x: sort_key(x[0], x[1]))
+    if len(sorted_months) < 2:
+        return {"error": "Not enough data for projection (need at least 2 months)"}
+
+    # Latest = M0 (current), previous months = M1, M2
+    M0 = sorted_months[-1]   # latest completed month
+    M1 = sorted_months[-2]   # one before
+    M2 = sorted_months[-3] if len(sorted_months) >= 3 else M1
+
+    W0, W1, W2 = 0.5, 0.3, 0.2
+
+    def weighted(v0, v1, v2):
+        return v0 * W0 + v1 * W1 + v2 * W2
+
+    # ── Overall KPI projection ────────────────────────────────────────────────
+    m0 = month_totals[M0]
+    m1 = month_totals[M1]
+    m2 = month_totals[M2]
+
+    proj_next_rev  = m0["revenue"] * 1.10
+    proj_next_qty  = m0["qty"]     * 1.10
+
+    proj_after_rev = proj_next_rev * 1.10
+    proj_after_qty = proj_next_qty * 1.10
+
+    mom_rev_pct = round(((m0["revenue"] - m1["revenue"]) / m1["revenue"] * 100), 1) if m1["revenue"] else 0
+    mom_qty_pct = round(((m0["qty"]     - m1["qty"])     / m1["qty"]     * 100), 1) if m1["qty"]     else 0
+
+    next_yr, next_mo     = next_month(M0[0], M0[1])
+    after_yr, after_mo   = next_month(next_yr, next_mo)
+
+    # ── Per-SKU projection ────────────────────────────────────────────────────
+    all_skus = sorted({k[2] for k in sku_month})
+    by_sku   = []
+
+    for sku in all_skus:
+        def sv(key, field):
+            return sku_month.get(key, {}).get(field, 0) or 0
+
+        s0_rev = sv((*M0, sku), "revenue");  s0_qty = sv((*M0, sku), "qty")
+        s1_rev = sv((*M1, sku), "revenue");  s1_qty = sv((*M1, sku), "qty")
+        s2_rev = sv((*M2, sku), "revenue");  s2_qty = sv((*M2, sku), "qty")
+
+        s_proj_next_rev  = s0_rev * 1.10
+        s_proj_next_qty  = s0_qty * 1.10
+        s_proj_after_rev = s_proj_next_rev * 1.10
+        s_proj_after_qty = s_proj_next_qty * 1.10
+
+        by_sku.append({
+            "sku_name":          sku,
+            "m2_label":          month_label(M2[0], M2[1]),
+            "m1_label":          month_label(M1[0], M1[1]),
+            "m0_label":          month_label(M0[0], M0[1]),
+            "proj_next_label":   month_label(next_yr,  next_mo),
+            "proj_after_label":  month_label(after_yr, after_mo),
+            "m2_revenue":        round(s2_rev, 2),
+            "m2_qty":            int(s2_qty),
+            "m1_revenue":        round(s1_rev, 2),
+            "m1_qty":            int(s1_qty),
+            "m0_revenue":        round(s0_rev, 2),
+            "m0_qty":            int(s0_qty),
+            "proj_next_revenue": round(s_proj_next_rev, 2),
+            "proj_next_qty":     int(round(s_proj_next_qty)),
+            "proj_after_revenue":round(s_proj_after_rev, 2),
+            "proj_after_qty":    int(round(s_proj_after_qty)),
+        })
+
+    by_sku.sort(key=lambda x: x["m0_revenue"], reverse=True)
+
+    return {
+        "current_month":  {"month": M0[1], "year": M0[0], "revenue": round(m0["revenue"], 2), "qty": m0["qty"]},
+        "prev_month":     {"month": M1[1], "year": M1[0], "revenue": round(m1["revenue"], 2), "qty": m1["qty"]},
+        "proj_next":      {"month": next_mo,  "year": next_yr,  "revenue": round(proj_next_rev, 2),  "qty": int(round(proj_next_qty))},
+        "proj_after":     {"month": after_mo, "year": after_yr, "revenue": round(proj_after_rev, 2), "qty": int(round(proj_after_qty))},
+        "mom_rev_pct":    mom_rev_pct,
+        "mom_qty_pct":    mom_qty_pct,
+        "by_sku":         by_sku,
+    }
+
+
+def get_cities() -> list[str]:
+    sb = get_supabase()
+    rows = sb.table("sales_records").select("city").execute().data
+    return sorted({r["city"] for r in rows if r.get("city")})

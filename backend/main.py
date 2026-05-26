@@ -4,10 +4,11 @@ import io
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
+from analytics.aggregator import get_projection
 
 from database.supabase_client import get_supabase
 from extraction import run_extraction_pipeline
-from analytics.aggregator import (
+from analytics.aggregator import (get_cities, get_projection,
     get_overview, get_shops, get_mom_trend, get_top_shops,
     get_top_shops_by_qty, get_skus, get_recurring_shops,
     get_top_shops_sku_breakdown,
@@ -106,6 +107,14 @@ async def upload_file(
         print(f"[DB] Inserted {len(result['records'])} rows into sales_records")
     else:
         print("[DB] Nothing to insert")
+
+    # 5b. Upsert margins if extracted (Pattern C / Mumbai format)
+    if result.get("margin_records"):
+        for m in result["margin_records"]:
+            sb.table("shop_margins").upsert(
+                m, on_conflict="shop_name,distributor_name"
+            ).execute()
+        print(f"[DB] Upserted {len(result['margin_records'])} margin rows")
 
     # 6. Update upload audit row to success
     sb.table("uploads").update({
@@ -295,8 +304,9 @@ def analytics_overview(
     year: int = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
+    city: str = Query(None),
 ):
-    return get_overview(month=month, year=year, distributor=distributor, sku=sku)
+    return get_overview(month=month, year=year, distributor=distributor, sku=sku, city=city)
 
 
 @app.get("/analytics/shops")
@@ -305,8 +315,9 @@ def analytics_shops(
     year: int = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
+    city: str = Query(None),
 ):
-    return get_shops(month=month, year=year, distributor=distributor, sku=sku)
+    return get_shops(month=month, year=year, distributor=distributor, sku=sku, city=city)
 
 
 @app.get("/analytics/mom-trend")
@@ -315,8 +326,9 @@ def analytics_mom_trend(
     sku: str = Query(None),
     month: str = Query(None),
     year: int = Query(None),
+    city: str = Query(None),
 ):
-    return get_mom_trend(distributor=distributor, sku=sku, month=month, year=year)
+    return get_mom_trend(distributor=distributor, sku=sku, month=month, year=year, city=city)
     
 @app.get("/analytics/distributor-mom")
 def analytics_distributor_mom(
@@ -324,8 +336,9 @@ def analytics_distributor_mom(
     sku: str = Query(None),
     month: str = Query(None),
     year: int = Query(None),
+    city: str = Query(None),
 ):
-    return get_distributor_mom(distributor=distributor, sku=sku, month=month, year=year)
+    return get_distributor_mom(distributor=distributor, sku=sku, month=month, year=year, city=city)
 
 
 @app.get("/analytics/top-shops")
@@ -335,8 +348,9 @@ def analytics_top_shops(
     distributor: str = Query(None),
     sku: str = Query(None),
     limit: int = Query(10),
+    city: str = Query(None),
 ):
-    return get_top_shops(month=month, year=year, distributor=distributor, sku=sku, limit=limit)
+    return get_top_shops(month=month, year=year, distributor=distributor, sku=sku, limit=limit, city=city)
 
 
 @app.get("/analytics/top-shops-by-qty")
@@ -346,8 +360,14 @@ def analytics_top_shops_qty(
     distributor: str = Query(None),
     sku: str = Query(None),
     limit: int = Query(10),
+    city: str = Query(None),
 ):
-    return get_top_shops_by_qty(month=month, year=year, distributor=distributor, sku=sku, limit=limit)
+    return get_top_shops_by_qty(month=month, year=year, distributor=distributor, sku=sku, limit=limit, city=city)
+
+
+@app.get("/analytics/cities")
+def analytics_cities():
+    return get_cities()
 
 
 @app.get("/analytics/skus")
@@ -361,8 +381,9 @@ def analytics_recurring_shops(
     year: int = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
+    city: str = Query(None),
 ):
-    return get_recurring_shops(month=month, year=year, distributor=distributor, sku=sku)
+    return get_recurring_shops(month=month, year=year, distributor=distributor, sku=sku, city=city)
 
 
 @app.get("/analytics/top-shops-sku-breakdown")
@@ -372,8 +393,9 @@ def analytics_top_shops_sku_breakdown(
     distributor: str = Query(None),
     sku: str = Query(None),
     limit: int = Query(10),
+    city: str = Query(None),
 ):
-    return get_top_shops_sku_breakdown(month=month, year=year, distributor=distributor, sku=sku, limit=limit)
+    return get_top_shops_sku_breakdown(month=month, year=year, distributor=distributor, sku=sku, limit=limit, city=city)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -895,3 +917,49 @@ def margins_save_one(body: dict):
     ).execute()
  
     return {"ok": True, "shop_name": shop_name, "distributor_name": distributor_name, "margin_pct": margin_pct}
+@app.get("/analytics/projection")
+def analytics_projection(distributor: str = Query(None)):
+    return get_projection(distributor=distributor)
+
+# =============================================================================
+# PROJECTION REMARKS — global notes (sales drop, shop closed, etc.)
+# =============================================================================
+
+@app.get("/projection-remarks")
+def get_projection_remarks():
+    sb = get_supabase()
+    return sb.table("projection_remarks").select("*").order("created_at", desc=True).execute().data
+
+
+@app.post("/projection-remarks")
+def create_projection_remark(body: dict):
+    sb       = get_supabase()
+    remark   = (body.get("remark")   or "").strip()
+    category = (body.get("category") or "Other").strip()
+    if not remark:
+        raise HTTPException(status_code=400, detail="remark is required")
+    result = sb.table("projection_remarks").insert({
+        "id": str(uuid.uuid4()), "remark": remark, "category": category,
+    }).execute()
+    return result.data[0]
+
+
+@app.patch("/projection-remarks/{remark_id}")
+def update_projection_remark(remark_id: str, body: dict):
+    sb      = get_supabase()
+    update  = {}
+    if "remark"   in body: update["remark"]   = (body["remark"]   or "").strip()
+    if "category" in body: update["category"] = (body["category"] or "Other").strip()
+    if not update:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    result = sb.table("projection_remarks").update(update).eq("id", remark_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Remark not found")
+    return result.data[0]
+
+
+@app.delete("/projection-remarks/{remark_id}")
+def delete_projection_remark(remark_id: str):
+    sb = get_supabase()
+    sb.table("projection_remarks").delete().eq("id", remark_id).execute()
+    return {"ok": True}

@@ -2,9 +2,9 @@ const MONTHS = ["January","February","March","April","May","June","July","August
 const currentYear = new Date().getFullYear();
 const YEARS = Array.from({ length: 4 }, (_, i) => currentYear - i);
 
-export default function FilterBar({ filters = {}, onChange, distributors = [], skus = [] }) {
+export default function FilterBar({ filters = {}, onChange, distributors = [], skus = [], cities = [] }) {
   const update = (key, value) => onChange({ ...filters, [key]: value });
-  const hasFilter = filters.month || filters.year || filters.distributor || filters.sku;
+  const hasFilter = filters.month || filters.year || filters.distributor || filters.sku || filters.city;
 
   return (
     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -28,8 +28,15 @@ export default function FilterBar({ filters = {}, onChange, distributors = [], s
         {skus.map((s) => <option key={s} value={s}>{s}</option>)}
       </select>
 
+      {cities.length > 0 && (
+        <select value={filters.city || ""} onChange={(e) => update("city", e.target.value)}>
+          <option value="">All cities</option>
+          {cities.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      )}
+
       {hasFilter && (
-        <button onClick={() => onChange({ month: "", year: "", distributor: "", sku: "" })}
+        <button onClick={() => onChange({ month: "", year: "", distributor: "", sku: "", city: "" })}
           style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, color: "var(--color-text-secondary)" }}>
           <i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden /> Clear filters
         </button>

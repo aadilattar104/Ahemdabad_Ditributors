@@ -4,11 +4,13 @@ import Upload from "./pages/Upload";
 import UploadHistory from "./pages/UploadHistory";
 import Settings from "./pages/Settings";
 import ModernTradeAnalytics from "./pages/ModernTradeAnalytics";
+import Projections from "./pages/Projections";
 import { getDistributors, getSkus } from "./services/api";
 
 const NAV = [
   { key: "dashboard",      label: "Secondary Sales Distributor Dashboard", icon: "chart-bar" },
   { key: "modern-trade",   label: "Modern Trade",          icon: "building-store" },
+  { key: "projections",    label: "Projections",           icon: "chart-line" },
   { key: "upload",         label: "Upload file",           icon: "upload" },
   { key: "upload-history", label: "Upload history",        icon: "history" },
   { key: "settings",       label: "Settings",              icon: "settings" },
@@ -102,6 +104,7 @@ export default function App() {
           />
         )}
         {page === "modern-trade"    && <ModernTradeAnalytics />}
+        {page === "projections"     && <Projections />}
         {page === "upload"          && <Upload onUploadSuccess={refreshDistributors} />}
         {page === "upload-history"  && (
           <UploadHistory onDistributorsChange={refreshDistributors} />

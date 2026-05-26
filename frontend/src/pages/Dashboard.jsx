@@ -11,7 +11,7 @@ import RecurringShopsTable from "../components/RecurringShops/RecurringShopsTabl
 import {
   getOverview, getShops, getMoMTrend, getTopShops,
   getTopShopsByQty, getRecurringShops, getTopShopsSkuBreakdown,
-  getDistributorMoM, getMargins,
+  getDistributorMoM, getMargins, getCities,
 } from "../services/api";
 
 // Props:
@@ -19,7 +19,7 @@ import {
 //   skus                — string[]  (from App, always fresh)
 //   onDistributorsChange — () => void  (call App to re-fetch after any mutation)
 export default function Dashboard({ distributors = [], skus = [], onDistributorsChange }) {
-  const [filters, setFilters]     = useState({ month: "", year: "", distributor: "", sku: "" });
+  const [filters, setFilters]     = useState({ month: "", year: "", distributor: "", sku: "", city: "" });
   const [overview, setOverview]   = useState(null);
   const [shops, setShops]         = useState([]);
   const [trend, setTrend]         = useState([]);
@@ -29,6 +29,7 @@ export default function Dashboard({ distributors = [], skus = [], onDistributors
   const [skuBreakdown, setSkuBreakdown] = useState({ by_revenue: [], by_qty: [] });
   const [distMoM, setDistMoM]     = useState([]);
   const [margins, setMargins]     = useState([]);
+  const [cities, setCities]       = useState([]);
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState("");
 
@@ -39,9 +40,10 @@ export default function Dashboard({ distributors = [], skus = [], onDistributors
     }
   }, [distributors]);
 
-  // Fetch margins once on mount — not tied to filters (margins are global per shop)
+  // Fetch margins + cities once on mount
   useEffect(() => {
     getMargins().then(setMargins).catch(() => setMargins([]));
+    getCities().then(setCities).catch(() => setCities([]));
   }, []);
 
   // Reload analytics when filters change
@@ -79,12 +81,12 @@ export default function Dashboard({ distributors = [], skus = [], onDistributors
       {/* Header + filters */}
       <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: "2rem", flexWrap: "wrap", gap: 12 }}>
         <div>
-          <p style={{ margin: 0, fontWeight: 600, fontSize: 24 }}>Secondary Sales Distributor Dashboard</p>
+          <p style={{ margin: 0, fontWeight: 600, fontSize: 24 }}>Distributor Dashboard</p>
           <p style={{ margin: "4px 0 0", fontSize: 15, color: "var(--color-text-secondary)" }}>
             Shop-wise sales analytics across all distributors
           </p>
         </div>
-        <FilterBar filters={filters} onChange={setFilters} distributors={distributors} skus={skus} />
+        <FilterBar filters={filters} onChange={setFilters} distributors={distributors} skus={skus} cities={cities} />
       </div>
 
       {error && (

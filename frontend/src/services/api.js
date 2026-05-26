@@ -98,3 +98,13 @@ export async function saveMargin(shopName, distributorName, marginPct) {
     body: JSON.stringify({ shop_name: shopName, distributor_name: distributorName, margin_pct: marginPct }),
   });
 }
+// ─── Projections (NEW) ────────────────────────────────────────────────────────
+export async function getProjection(params = {}) {
+  return request(`/analytics/projection${qs(params)}`);
+}
+// ─── Projection Remarks ───────────────────────────────────────────────────────
+export async function getProjectionRemarks()           { return request("/projection-remarks"); }
+export async function createProjectionRemark(body)     { return request("/projection-remarks", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
+export async function updateProjectionRemark(id, body) { return request(`/projection-remarks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
+export async function deleteProjectionRemark(id)       { return request(`/projection-remarks/${id}`, { method: "DELETE" }); }
+export async function getCities() { return request("/analytics/cities"); }

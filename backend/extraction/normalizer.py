@@ -143,6 +143,7 @@ def normalize_records(
             # was missing, so bad records are visible rather than silently misdated.
             "month":            rec.get("month"),
             "year":             rec.get("year"),
+            "city":             rec.get("city"),      # None for Ahmedabad, "Mumbai" for Pattern C
         })
 
     return normalized
