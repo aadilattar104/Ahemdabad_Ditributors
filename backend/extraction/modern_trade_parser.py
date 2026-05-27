@@ -225,6 +225,125 @@ def _parse_soh_sheet(rows, chain_name: str, upload_id: str) -> list:
     return records
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# FIRSTCLUB flat sales format
+# Sheet: "in"
+# Header row (row 0): sale_date | FCN | Product_name | brand | Sum of units_sold | Sum of gmv
+# One row per (date × FCN × SKU). No SOH sheet.
+# store_code = FCN value, store_name = "Firstclub" (hardcoded)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _is_firstclub_sheet(header_row) -> bool:
+    """Detect Firstclub sheet by presence of 'FCN' and 'sale_date' in header."""
+    if not header_row:
+        return False
+    texts = [str(c).strip().lower() for c in header_row if c is not None]
+    return "fcn" in texts and "sale_date" in texts
+
+
+def _parse_firstclub_sheet(rows, chain_name: str, upload_id: str) -> list:
+    """
+    Parse Firstclub flat sales sheet.
+
+    Extracted columns only (0-indexed):
+      0  sale_date         → bill_date, month, year
+      2  Product_name      → sku_name
+      4  Sum of units_sold → qty
+      5  Sum of gmv        → revenue  (treated as revenue)
+
+    FCN and brand are intentionally ignored.
+    All rows are collapsed into ONE logical store:
+      store_code = "FIRSTCLUB"
+      store_name = "Firstclub"
+      article_id = "" (not present in this format)
+
+    Rows with the same (month, year, sku_name) are aggregated so that
+    the 14 individual FCN entries appear as a single Firstclub store.
+    """
+    import datetime
+
+    # ── Step 1: collect raw rows ──────────────────────────────────────────────
+    # key: (month_str, year_int, sku_name) → {qty, revenue}
+    aggregated = {}
+
+    for row in rows[1:]:   # row[0] is the header
+        if row is None:
+            continue
+        if all(v is None for v in row):
+            continue
+
+        sale_date_raw = row[0]
+        # col 1 (FCN)   — intentionally skipped
+        sku_name      = str(row[2] or "").strip()
+        # col 3 (brand) — intentionally skipped
+        qty_raw       = row[4]
+        gmv_raw       = row[5]
+
+        if not sku_name:
+            continue
+
+        # Parse date → month / year
+        bill_date = None
+        if isinstance(sale_date_raw, datetime.datetime):
+            bill_date = sale_date_raw.date()
+        elif isinstance(sale_date_raw, datetime.date):
+            bill_date = sale_date_raw
+        elif sale_date_raw is not None:
+            try:
+                import pandas as pd
+                parsed = pd.to_datetime(str(sale_date_raw).strip(), dayfirst=True, errors="coerce")
+                if not pd.isna(parsed):
+                    bill_date = parsed.date()
+            except Exception:
+                pass
+
+        if bill_date is None:
+            continue
+
+        month = bill_date.strftime("%B")   # e.g. "May"
+        year  = bill_date.year             # e.g. 2026
+
+        qty = 0
+        try:
+            qty = int(float(qty_raw)) if qty_raw is not None else 0
+        except (ValueError, TypeError):
+            qty = 0
+
+        revenue = 0.0
+        try:
+            revenue = float(gmv_raw) if gmv_raw is not None else 0.0
+        except (ValueError, TypeError):
+            revenue = 0.0
+
+        if qty == 0 and revenue == 0.0:
+            continue
+
+        # Aggregate into a single store keyed by (month, year, sku_name)
+        key = (month, year, sku_name)
+        if key not in aggregated:
+            aggregated[key] = {"qty": 0, "revenue": 0.0}
+        aggregated[key]["qty"]     += qty
+        aggregated[key]["revenue"] += revenue
+
+    # ── Step 2: emit one record per (month, year, sku_name) ──────────────────
+    records = []
+    for (month, year, sku_name), totals in aggregated.items():
+        records.append({
+            "upload_id":  upload_id,
+            "chain_name": chain_name,
+            "store_code": "FIRSTCLUB",   # single logical store — no FCN splitting
+            "store_name": "Firstclub",
+            "article_id": "",            # not present in this format
+            "sku_name":   sku_name,
+            "qty":        totals["qty"],
+            "revenue":    round(totals["revenue"], 2),
+            "month":      month,
+            "year":       year,
+        })
+
+    return records
+
+
 # ─── Public entry point ────────────────────────────────────────────────────────
 
 def run_mt_extraction_pipeline(
@@ -242,6 +361,10 @@ def run_mt_extraction_pipeline(
         sales_count:   int,
         soh_count:     int,
       }
+
+    Supported formats (auto-detected by chain name + sheet structure):
+      • Reliance Fresh Pik / GoFresh  — multi-month pivot columns, optional SOH sheet
+      • Firstclub                     — flat daily sales sheet ("in"), no SOH
 
     This function is completely independent of run_extraction_pipeline().
     It does NOT touch sales_records, uploads, or any distributor tables.
@@ -262,13 +385,25 @@ def run_mt_extraction_pipeline(
         if len(rows) < 2:
             continue
 
-        header = rows[1]
+        # Header is row[0] for Firstclub, row[1] for Reliance
+        header_row0 = rows[0]
+        header_row1 = rows[1]
 
-        if _is_soh_sheet(header):
+        # ── Firstclub flat sales format ───────────────────────────────────────
+        if _is_firstclub_sheet(header_row0):
+            print(f"[MT PARSER] Sheet '{sheet_name}' → Firstclub Sales")
+            sales = _parse_firstclub_sheet(rows, chain_name, upload_id)
+            all_sales.extend(sales)
+            print(f"[MT PARSER] Firstclub Sales records: {len(sales)}")
+
+        # ── Reliance SOH sheet ────────────────────────────────────────────────
+        elif _is_soh_sheet(header_row1):
             print(f"[MT PARSER] Sheet '{sheet_name}' → SOH")
             soh = _parse_soh_sheet(rows, chain_name, upload_id)
             all_soh.extend(soh)
             print(f"[MT PARSER] SOH records: {len(soh)}")
+
+        # ── Reliance pivot sales sheet ────────────────────────────────────────
         else:
             print(f"[MT PARSER] Sheet '{sheet_name}' → Sales")
             sales = _parse_sales_sheet(rows, chain_name, upload_id, sheet_name)

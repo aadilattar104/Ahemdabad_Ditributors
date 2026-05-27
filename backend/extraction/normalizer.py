@@ -1,20 +1,59 @@
 import re
 from rapidfuzz import fuzz
 
-EXCLUDE_SHOPS = {"cash sales", "unknown", ""}
-FUZZY_THRESHOLD = 90
+EXCLUDE_SHOPS = {"unknown", ""}  # cash sales is valid — included
+
+# Words that look like city names but are actually business words.
+# If the double-space suffix matches one of these, keep it as part of the shop name.
+_BUSINESS_WORDS = {
+    "foods", "food", "store", "stores", "mart", "market", "markets",
+    "supermart", "supermarket", "enterprise", "enterprises", "traders",
+    "trading", "agency", "agencies", "products", "product", "services",
+    "service", "solutions", "house", "hub", "centre", "center", "point",
+    "corner", "plaza", "mall", "world", "zone", "circle", "square",
+    "bazar", "bazaar", "medical", "pharmacy", "chemist", "general",
+    "varieties", "variety", "collection", "collections", "depot", "supply",
+    "suppliers", "distributor", "distributors", "wholesale", "retail",
+    "international", "national", "india", "industries", "industry",
+    "sweets", "sweet", "farsan", "dryfruits", "dryfruit", "nuts", "snacks",
+    "grocery", "groceries", "provisions", "provision", "kirana", "departmental",
+    "pvtltd", "llp", "ltd", "inc",
+}
 
 
 def clean_name(name: str) -> str:
-    # Strip city column if present (double space separator in Synergy)
-    name = re.split(r'  +', name)[0].strip()
+    """
+    Clean and normalise a shop name.
+
+    Double-space stripping (Synergy city suffix handling):
+      Synergy stores shop names as "SHOP NAME  CITY" with 2+ spaces before city.
+      We strip the city suffix ONLY if it looks like a standalone city word — i.e.
+      a single alpha word that is NOT a known business word (Foods, Store, etc.).
+      This prevents "Shreeji  Foods" from being truncated to "Shreeji".
+    """
+    parts = re.split(r"  +", name)
+    if len(parts) > 1:
+        suffix = parts[-1].strip()
+        suffix_key = suffix.lower().replace(" ", "")
+        is_city_like = (
+            len(suffix) >= 3
+            and suffix.replace(" ", "").isalpha()   # purely alphabetic
+            and " " not in suffix                    # single word
+            and suffix_key not in _BUSINESS_WORDS    # not a business word
+            and not suffix_key.startswith("pvt")
+            and not suffix_key.startswith("llp")
+        )
+        name = parts[0].strip() if is_city_like else " ".join(parts).strip()
+    else:
+        name = name.strip()
+
     name = name.strip().strip("-").strip()
-    name = re.sub(r'\s+', ' ', name)
+    name = re.sub(r"\s+", " ", name)
     name = name.upper()
-    # Legal suffix normalization
-    name = re.sub(r'PVT\.?\s*LTD\.?', 'PVT LTD', name)
-    name = re.sub(r'LLP\.?', 'LLP', name)
-    name = re.sub(r'INC\.?', 'INC', name)
+    # Legal suffix normalisation
+    name = re.sub(r"PVT\.?\s*LTD\.?", "PVT LTD", name)
+    name = re.sub(r"LLP\.?", "LLP", name)
+    name = re.sub(r"INC\.?", "INC", name)
     name = name.strip(".").strip(",").strip()
     return name
 
@@ -31,7 +70,7 @@ def _get_suffix(name: str):
          'SHREEJI KAJUWALA, VASTRAPUR'   -> 'VASTRAPUR'
          'PURNIMA FOODS'                 -> None
     """
-    for sep in [' - ', '-', ', ', ',']:
+    for sep in [" - ", "-", ", ", ","]:
         if sep in name:
             parts = name.rsplit(sep, 1)
             suffix = parts[-1].strip()
@@ -53,13 +92,14 @@ def _should_merge(name1: str, name2: str, score: float) -> bool:
         return False
     s1 = _get_suffix(name1)
     s2 = _get_suffix(name2)
-    # One has branch suffix, other doesn't = keep separate
     if bool(s1) != bool(s2):
         return False
-    # Both have suffixes but different locations = different branches
     if s1 and s2 and s1 != s2:
         return False
     return True
+
+
+FUZZY_THRESHOLD = 90
 
 
 def _best_match(name: str, candidates: list) -> tuple:
@@ -84,18 +124,12 @@ def normalize_records(
     Normalize raw parser output into unified DB schema.
 
     - Drops records with qty == 0 AND revenue == 0
-    - Excludes junk shops (Cash Sales, Unknown, etc.)
+    - Excludes junk shops (Unknown, blank — NOT Cash Sales)
     - Fuzzy merges typo/casing variants ONLY within same distributor
     - Keeps different branches separate (different location suffix = different shop)
     - Keeps same shop served by two distributors as separate rows
     - Passes through SKU-level fields: sku_name, bill_no, bill_date, rate
-
-    DATE ARCHITECTURE:
-    month and year are taken directly from each record as set by the parser's _make().
-    No external month/year fallback is applied — if the parser could not derive a date
-    from a transaction's bill_date, month/year will be None for that record.
-    This ensures each record carries its own correct date bucket and aggregation
-    across mixed-month exports remains accurate.
+    - Passes city through from parser (Mumbai = Pattern C, None = Ahmedabad)
     """
     seen_shops = {}  # (distributor, cleaned_name) -> canonical_name
     normalized = []
@@ -119,7 +153,7 @@ def normalize_records(
         if dist_names:
             match, score = _best_match(shop_name, list(dist_names.keys()))
             if _should_merge(shop_name, match, score):
-                shop_name = dist_names[match]  # use canonical name
+                shop_name = dist_names[match]
             else:
                 seen_shops[(dist, shop_name)] = shop_name
         else:
@@ -130,20 +164,15 @@ def normalize_records(
             "distributor_name": dist,
             "shop_name":        shop_name,
             "shop_type":        rec.get("shop_type") or "REGULAR",
-            # ── SKU-level fields ────────────────────────────────────
             "sku_name":         str(rec.get("sku_name") or "UNKNOWN").strip(),
             "bill_no":          rec.get("bill_no"),
             "bill_date":        rec.get("bill_date"),
             "rate":             rec.get("rate"),
-            # ───────────────────────────────────────────────────────
             "qty":              qty,
             "revenue":          round(revenue, 2),
-            # month/year come purely from the parser (derived from bill_date).
-            # No external fallback — None is intentionally preserved if bill_date
-            # was missing, so bad records are visible rather than silently misdated.
             "month":            rec.get("month"),
             "year":             rec.get("year"),
-            "city":             rec.get("city"),      # None for Ahmedabad, "Mumbai" for Pattern C
+            "city":             rec.get("city"),
         })
 
     return normalized
