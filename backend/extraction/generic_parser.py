@@ -40,6 +40,8 @@ PARTY_KEYWORDS  = ["party name", "party", "customer name", "customer", "shop nam
 SKU_KEYWORDS    = ["product name", "product", "particular", "item name", "item", "description"]
 DATE_KEYWORDS   = ["bill date", "date"]
 BILLNO_KEYWORDS = ["bill no", "bill number", "invoice no", "voucher no"]
+MRP_AMT_KW      = ["mrp amt", "mrp amount", "amount"]
+PARTICULARS_KW  = ["particulars", "particular"]
 
 
 def parse_generic(
@@ -80,6 +82,27 @@ def parse_generic(
             df, header_idx,
             party_col, sku_col, date_col, billno_col,
             qty_col, taxable_col, margin_col,
+            distributor_name,
+        )
+
+    # Detect Pattern E — Sangeeta flat register (has MRP Amt column)
+    mrp_amt_col = _find_col(header_row, MRP_AMT_KW, ["mrp amt", "mrp amount", "mrp", "taxable", "gst", "tax", "bill", "claim", "25%", "margin", "recd", "scheme"])
+    if mrp_amt_col is not None:
+        return _parse_sangeeta_register(
+            df, header_idx,
+            party_col, sku_col, date_col, billno_col,
+            qty_col, mrp_amt_col,
+            distributor_name,
+        )
+
+    # Detect Pattern D — Universal Marketing grouped
+    # Identified by: header has "Particulars" or "Sales Register" style,
+    # and data rows have date in col0 + shop in col1 (invoice row) then blank col0 + sku in col1 (detail row)
+    particulars_col = _find_col(header_row, PARTICULARS_KW, [])
+    if particulars_col is not None and party_col is None:
+        return _parse_universal_grouped(
+            df, header_idx,
+            qty_col, amt_col, rate_col, date_col, billno_col,
             distributor_name,
         )
 
@@ -167,7 +190,7 @@ def _parse_grouped(
             revenue = _safe_float(row.iloc[amt_col])  if amt_col is not None  else 0.0
             rate    = _safe_float(row.iloc[rate_col]) if rate_col is not None else None
 
-            if sku and (qty > 0 or revenue > 0):
+            if sku and (qty != 0 or revenue != 0.0):
                 records.append(_make(
                     distributor_name, current_shop, current_shop_type,
                     sku, current_bill_no, current_bill_date,
@@ -273,7 +296,7 @@ def _parse_register(
             revenue = _safe_float(row.iloc[amt_col])  if amt_col is not None  else 0.0
             rate    = _safe_float(row.iloc[rate_col]) if rate_col is not None else None
 
-            if sku and (qty > 0 or revenue > 0):
+            if sku and (qty != 0 or revenue != 0.0):
                 records.append(_make(
                     distributor_name, current_shop, current_shop_type,
                     sku, current_bill_no, current_bill_date,
@@ -349,6 +372,197 @@ def _parse_mumbai_register(
         rec["city"]       = "Mumbai"
         rec["margin_pct"] = round(margin_pct * 100, 2) if margin_pct and margin_pct < 1 else (round(margin_pct, 2) if margin_pct else None)
 
+        records.append(rec)
+
+    return records
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATTERN D: Universal Marketing grouped (Sales Register format)
+# Date in col0, shop+voucher in col1/col3 of invoice row, SKU in col1 of detail rows
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_universal_grouped(
+    df, header_idx,
+    qty_col, amt_col, rate_col, date_col, billno_col,
+    distributor_name,
+):
+    """
+    Parse Universal Marketing Sales Register format.
+
+    Structure:
+      Header: Date | Particulars | Voucher Type | Voucher No. | Quantity | Rate | Value | Sales
+      Invoice row: col0=date, col1=shop_name, col2="Sales", col3=voucher_no, col4=total_qty, col6=total_value
+      Detail row:  col0=None,  col1=sku_name, col2="",      col3="",          col4=qty,        col5=rate, col6=value
+
+    Revenue = col6 (Value) on detail rows.
+    City = "Mumbai" (Universal Marketing is Mumbai-based).
+    Negative qty rows (returns) are included as-is.
+    """
+    records = []
+    current_shop      = None
+    current_shop_type = "REGULAR"
+    current_bill_no   = None
+    current_bill_date = None
+
+    # col indices for this format
+    DATE_COL    = 0
+    SHOP_COL    = 1
+    VTYPE_COL   = 2
+    BILLNO_COL  = 3
+    QTY_COL     = 4
+    RATE_COL    = 5
+    VALUE_COL   = 6
+
+    for i in range(header_idx + 1, len(df)):
+        row  = df.iloc[i]
+        col0 = row.iloc[DATE_COL] if len(row) > DATE_COL else None
+        col1 = row.iloc[SHOP_COL] if len(row) > SHOP_COL else None
+        col2 = row.iloc[VTYPE_COL] if len(row) > VTYPE_COL else None
+
+        if _is_grand_total(row):
+            break
+        if _is_blank(row):
+            continue
+
+        # ── Invoice header row: col0 has a date ──────────────────────────────
+        parsed_date = _parse_date(col0)
+        if parsed_date is not None and col1 and _str(col1):
+            current_bill_date = parsed_date
+            current_shop, current_shop_type = clean_shop_name(_str(col1))
+            current_bill_no = _str(row.iloc[BILLNO_COL]) if len(row) > BILLNO_COL else None
+            continue
+
+        # ── Detail row: col0 blank, col1 = SKU name ───────────────────────────
+        if current_shop and _is_blank_val(col0) and col1 and _str(col1):
+            sku     = _str(col1)
+            # Skip sub-header or blank sku
+            if not sku or sku.lower() in ("particulars", "item", "description", ""):
+                continue
+
+            qty_raw = row.iloc[QTY_COL] if len(row) > QTY_COL else None
+            rev_raw = row.iloc[VALUE_COL] if len(row) > VALUE_COL else None
+            rate_raw = row.iloc[RATE_COL] if len(row) > RATE_COL else None
+
+            qty     = _safe_int(qty_raw)
+            revenue = _safe_float(rev_raw)
+            rate    = _safe_float(rate_raw) if rate_raw else None
+
+            if qty == 0 and revenue == 0.0:
+                continue
+
+            rec = _make(
+                distributor_name, current_shop, current_shop_type,
+                sku, current_bill_no, current_bill_date,
+                qty, rate, revenue,
+            )
+            rec["city"] = "Mumbai"
+            records.append(rec)
+
+    return records
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATTERN E: Sangeeta Enterprises flat register (MRP Amt column)
+# Completely flat — one row per SKU per invoice, party name has locality suffix
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_sangeeta_register(
+    df, header_idx,
+    party_col, sku_col, date_col, billno_col,
+    qty_col, mrp_amt_col,
+    distributor_name,
+):
+    """
+    Parse Sangeeta Enterprises Date-wise Sale Analysis format.
+
+    Structure (completely flat, one row per SKU):
+      col0=Date, col1=Bill No, col2=Type, col3=Party Name, col4=Item Name,
+      col5=Batch, col6=Qty, col7=Free Qty, col8=Rate, ..., col11=MRP Amt
+
+    Transaction types:
+      "Sale" → positive qty / revenue (normal sales)
+      "S/Re" → sales return — qty and revenue stored as NEGATIVE
+      "Scra" → scrap/damaged — qty and revenue stored as NEGATIVE
+
+    Sign is enforced from the Type column using -abs(), so SUM(qty) and
+    SUM(revenue) across the period naturally produce the correct net figures
+    (e.g. 508 gross sales − 25 returns = 483 net).
+
+    Party Name format: "PATEL GENERAL STORE           COLABA"
+      — locality is after multiple spaces, stripped by normalizer's clean_name().
+
+    SKU Name format: "SWAS CHANA JOR 85 GM          85 GM"
+      — size suffix after multiple spaces is stripped here.
+
+    Revenue = MRP Amt (col 11). City = "Mumbai".
+    """
+    records = []
+
+    # Fixed column indices for Sangeeta format
+    DATE_COL    = 0
+    BILLNO_COL  = 1
+    TYPE_COL    = 2  # "Sale", "S/Re" (return), "Scra" (scrap/damaged)
+    PARTY_COL   = 3
+    SKU_COL     = 4
+    QTY_COL     = 6
+    RATE_COL    = 8
+    MRP_AMT_COL = 11  # Amount column = col L (index 11), fixed for Sangeeta format
+
+    # Transaction types that represent negative flows (returns / write-offs).
+    # Qty and revenue for these rows must be stored as negative values so that
+    # SUM(qty) and SUM(revenue) across the period give the correct net figures.
+    NEGATIVE_TYPES = {"s/re", "scra"}
+
+    for i in range(header_idx + 1, len(df)):
+        row = df.iloc[i]
+
+        if _is_blank(row):
+            continue
+        if _is_grand_total(row):
+            break
+
+        # Skip sub-header rows (col0 is a string label, not a date)
+        col0 = row.iloc[DATE_COL] if len(row) > DATE_COL else None
+        bill_date = _parse_date(col0)
+        if bill_date is None and isinstance(col0, str) and col0.strip():
+            continue  # label row
+
+        shop_raw = _str(row.iloc[PARTY_COL]) if len(row) > PARTY_COL else ""
+        sku_raw  = _str(row.iloc[SKU_COL])   if len(row) > SKU_COL   else ""
+
+        if not shop_raw or not sku_raw:
+            continue
+
+        # Clean SKU: strip size suffix after multiple spaces
+        # "SWAS CHANA JOR 85 GM          85 GM" → "SWAS CHANA JOR 85 GM"
+        sku_parts = sku_raw.split("  ")
+        sku = sku_parts[0].strip() if sku_parts else sku_raw
+
+        bill_no  = _str(row.iloc[BILLNO_COL]) if len(row) > BILLNO_COL else None
+        txn_type = _str(row.iloc[TYPE_COL]).lower() if len(row) > TYPE_COL else ""
+        qty      = _safe_int(row.iloc[QTY_COL])       if len(row) > QTY_COL     else 0
+        revenue  = _safe_float(row.iloc[MRP_AMT_COL]) if len(row) > MRP_AMT_COL else 0.0
+        rate     = _safe_float(row.iloc[RATE_COL])    if len(row) > RATE_COL    else None
+
+        # Enforce sign from transaction type — source data from Tally already
+        # writes these as negatives, but we re-enforce here so any future
+        # export variant (which might omit the sign) is handled correctly.
+        if txn_type in NEGATIVE_TYPES:
+            qty     = -abs(qty)
+            revenue = -abs(revenue)
+
+        if qty == 0 and revenue == 0.0:
+            continue
+
+        shop_name, shop_type = clean_shop_name(shop_raw)
+
+        rec = _make(
+            distributor_name, shop_name, shop_type,
+            sku, bill_no, bill_date,
+            qty, rate, revenue,
+        )
+        rec["city"] = "Mumbai"
         records.append(rec)
 
     return records
@@ -449,6 +663,11 @@ def _is_blank_val(v):
     if isinstance(v, float) and np.isnan(v):
         return True
     if str(v).strip() in ("", "nan"):
+        return True
+    # Whitespace-only strings (e.g. "           ") must also be treated as blank.
+    # Some Tally exports pad subtotal rows with spaces instead of leaving cells empty,
+    # which would otherwise bypass _is_blank() and get parsed as data rows.
+    if isinstance(v, str) and not v.strip():
         return True
     return False
 
