@@ -963,3 +963,131 @@ def delete_projection_remark(remark_id: str):
     sb = get_supabase()
     sb.table("projection_remarks").delete().eq("id", remark_id).execute()
     return {"ok": True}
+
+# =============================================================================
+# SKU NORMALISATION ENDPOINTS
+# =============================================================================
+
+@app.get("/sku/canonical")
+def get_sku_canonical(source_type: str = Query("DISTRIBUTOR")):
+    sb = get_supabase()
+    canonicals = sb.table("sku_canonical").select("*").order("category").order("family").order("name").execute().data
+    mappings   = sb.table("sku_mappings").select("*").eq("source_type", source_type).execute().data
+    mapping_map = {}
+    for m in mappings:
+        mapping_map.setdefault(m["canonical_id"], []).append(m)
+    for c in canonicals:
+        c["mappings"] = mapping_map.get(c["id"], [])
+    return canonicals
+
+
+@app.get("/sku/unmapped")
+def get_unmapped_skus(source_type: str = Query("DISTRIBUTOR")):
+    """
+    Returns raw SKU names not yet mapped, each with source distributor/chain.
+    source_type = "DISTRIBUTOR" → sales_records.distributor_name
+    source_type = "MT"          → mt_sales_records.chain_name
+    """
+    sb = get_supabase()
+    if source_type == "MT":
+        rows = sb.table("mt_sales_records").select("sku_name, chain_name").execute().data
+        raw_map = {}
+        for r in rows:
+            sku = (r.get("sku_name") or "").strip()
+            src = (r.get("chain_name") or "UNKNOWN").strip()
+            if sku:
+                raw_map.setdefault(sku, set()).add(src)
+    else:
+        rows = sb.table("sales_records").select("sku_name, distributor_name").execute().data
+        raw_map = {}
+        for r in rows:
+            sku = (r.get("sku_name") or "").strip()
+            src = (r.get("distributor_name") or "UNKNOWN").strip()
+            if sku:
+                raw_map.setdefault(sku, set()).add(src)
+
+    mapped = sb.table("sku_mappings").select("raw_sku").eq("source_type", source_type).execute().data
+    mapped_set = {m["raw_sku"] for m in mapped}
+
+    unmapped = [
+        {"raw_sku": sku, "sources": sorted(srcs)}
+        for sku, srcs in sorted(raw_map.items())
+        if sku not in mapped_set
+    ]
+    return {"unmapped": unmapped, "count": len(unmapped)}
+
+
+@app.get("/sku/categories")
+def get_sku_categories():
+    """Returns all distinct categories currently in sku_canonical."""
+    sb = get_supabase()
+    rows = sb.table("sku_canonical").select("category").execute().data
+    cats = sorted({r["category"] for r in rows if r.get("category")})
+    return {"categories": cats}
+
+
+@app.post("/sku/canonical")
+def create_sku_canonical(body: dict):
+    sb = get_supabase()
+    category = (body.get("category") or "").strip()
+    family   = (body.get("family")   or "").strip()
+    name     = (body.get("name")     or "").strip()
+    if not all([category, family, name]):
+        raise HTTPException(status_code=400, detail="category, family, and name are required")
+    result = sb.table("sku_canonical").insert({
+        "id": str(uuid.uuid4()), "category": category, "family": family, "name": name
+    }).execute()
+    return result.data[0]
+
+
+@app.patch("/sku/canonical/{canonical_id}")
+def update_sku_canonical(canonical_id: str, body: dict):
+    sb = get_supabase()
+    update = {}
+    if "category" in body: update["category"] = body["category"].strip()
+    if "family"   in body: update["family"]   = body["family"].strip()
+    if "name"     in body: update["name"]     = body["name"].strip()
+    if not update:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    result = sb.table("sku_canonical").update(update).eq("id", canonical_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Canonical SKU not found")
+    return result.data[0]
+
+
+@app.delete("/sku/canonical/{canonical_id}")
+def delete_sku_canonical(canonical_id: str):
+    sb = get_supabase()
+    sb.table("sku_mappings").delete().eq("canonical_id", canonical_id).execute()
+    sb.table("sku_canonical").delete().eq("id", canonical_id).execute()
+    return {"ok": True}
+
+
+@app.post("/sku/mappings")
+def create_sku_mapping(body: dict):
+    sb = get_supabase()
+    raw_sku      = (body.get("raw_sku")      or "").strip()
+    canonical_id = (body.get("canonical_id") or "").strip()
+    source_type  = (body.get("source_type")  or "DISTRIBUTOR").strip()
+    source_name  = (body.get("source_name")  or "").strip()
+    if not all([raw_sku, canonical_id, source_name]):
+        raise HTTPException(status_code=400, detail="raw_sku, canonical_id, and source_name are required")
+    existing = sb.table("sku_mappings").select("id").eq("raw_sku", raw_sku).eq("source_type", source_type).execute()
+    if existing.data:
+        result = sb.table("sku_mappings").update({
+            "canonical_id": canonical_id, "source_name": source_name
+        }).eq("id", existing.data[0]["id"]).execute()
+        return result.data[0]
+    result = sb.table("sku_mappings").insert({
+        "id": str(uuid.uuid4()),
+        "raw_sku": raw_sku, "canonical_id": canonical_id,
+        "source_type": source_type, "source_name": source_name,
+    }).execute()
+    return result.data[0]
+
+
+@app.delete("/sku/mappings/{mapping_id}")
+def delete_sku_mapping(mapping_id: str):
+    sb = get_supabase()
+    sb.table("sku_mappings").delete().eq("id", mapping_id).execute()
+    return {"ok": True}

@@ -5,12 +5,14 @@ import UploadHistory from "./pages/UploadHistory";
 import Settings from "./pages/Settings";
 import ModernTradeAnalytics from "./pages/ModernTradeAnalytics";
 import Projections from "./pages/Projections";
-import { getDistributors, getSkus } from "./services/api";
+import SkuNormalisation from "./pages/SkuNormalisation";
+import { getDistributors, getSkuCanonical } from "./services/api";
 
 const NAV = [
   { key: "dashboard",      label: "Secondary Sales Distributor Dashboard", icon: "chart-bar" },
   { key: "modern-trade",   label: "Modern Trade",          icon: "building-store" },
   { key: "projections",    label: "Projections",           icon: "chart-line" },
+  { key: "normalisation",  label: "SKU Normalisation",     icon: "hierarchy" },
   { key: "upload",         label: "Upload file",           icon: "upload" },
   { key: "upload-history", label: "Upload history",        icon: "history" },
   { key: "settings",       label: "Settings",              icon: "settings" },
@@ -52,10 +54,18 @@ export default function App() {
   const [skus, setSkus]                 = useState([]);
 
   const refreshDistributors = useCallback(() => {
+    // Each call is fully independent — one failing never blocks the other
     getDistributors()
       .then((d) => setDistributors(d.map((x) => x.distributor_name)))
-      .catch(() => {});
-    getSkus().then(setSkus).catch(() => {});
+      .catch(() => setDistributors([]));
+
+    // Fetch canonical SKUs — falls back safely if endpoint errors or returns non-array
+    getSkuCanonical("DISTRIBUTOR")
+      .then((rows) => {
+        if (!Array.isArray(rows)) { setSkus([]); return; }
+        setSkus(rows.map((r) => ({ name: r.name, category: r.category })));
+      })
+      .catch(() => setSkus([]));
   }, []);
 
   // Load once on mount
@@ -109,6 +119,7 @@ export default function App() {
         {page === "upload-history"  && (
           <UploadHistory onDistributorsChange={refreshDistributors} />
         )}
+        {page === "normalisation"   && <SkuNormalisation />}
         {page === "settings"        && <Settings />}
       </main>
     </div>

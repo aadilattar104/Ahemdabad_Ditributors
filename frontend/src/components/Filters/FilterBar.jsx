@@ -1,10 +1,22 @@
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const currentYear = new Date().getFullYear();
 const YEARS = Array.from({ length: 4 }, (_, i) => currentYear - i);
+const CATEGORIES = ["Namkeen", "Khakhara"];
 
 export default function FilterBar({ filters = {}, onChange, distributors = [], skus = [], cities = [] }) {
   const update = (key, value) => onChange({ ...filters, [key]: value });
-  const hasFilter = filters.month || filters.year || filters.distributor || filters.sku || filters.city;
+  const hasFilter = filters.month || filters.year || filters.distributor || filters.sku || filters.city || filters.category;
+
+  // When category changes, clear the SKU filter (SKU list will update to match category)
+  const updateCategory = (val) => onChange({ ...filters, category: val, sku: "" });
+
+  // Filter canonical SKUs by selected category
+  // skus prop is now expected to be [{ name, category }] or string[]
+  const filteredSkus = filters.category
+    ? skus.filter((s) => (typeof s === "string" ? true : s.category === filters.category))
+    : skus;
+
+  const skuNames = filteredSkus.map((s) => typeof s === "string" ? s : s.name);
 
   return (
     <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
@@ -23,9 +35,15 @@ export default function FilterBar({ filters = {}, onChange, distributors = [], s
         {distributors.map((d) => <option key={d} value={d}>{d}</option>)}
       </select>
 
+      {/* Category filter — narrows SKU list */}
+      <select value={filters.category || ""} onChange={(e) => updateCategory(e.target.value)}>
+        <option value="">All categories</option>
+        {CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+
       <select value={filters.sku || ""} onChange={(e) => update("sku", e.target.value)}>
         <option value="">All SKUs</option>
-        {skus.map((s) => <option key={s} value={s}>{s}</option>)}
+        {skuNames.map((s) => <option key={s} value={s}>{s}</option>)}
       </select>
 
       {cities.length > 0 && (
@@ -36,7 +54,7 @@ export default function FilterBar({ filters = {}, onChange, distributors = [], s
       )}
 
       {hasFilter && (
-        <button onClick={() => onChange({ month: "", year: "", distributor: "", sku: "", city: "" })}
+        <button onClick={() => onChange({ month: "", year: "", distributor: "", sku: "", city: "", category: "" })}
           style={{ fontSize: 12, display: "flex", alignItems: "center", gap: 4, color: "var(--color-text-secondary)" }}>
           <i className="ti ti-x" style={{ fontSize: 13 }} aria-hidden /> Clear filters
         </button>

@@ -17,8 +17,10 @@ def _validate_one(rec: dict) -> str | None:
         return "Missing distributor_name"
     if not rec.get("sku_name") or rec["sku_name"].strip() == "":
         return "Missing sku_name"
-    if rec.get("qty", 0) < 0:
-        return f"Negative qty: {rec['qty']}"
-    if rec.get("revenue", 0.0) < 0:
-        return f"Negative revenue: {rec['revenue']}"
+    # Allow negative qty and revenue — these are valid return/credit note rows
+    # (Sangeeta S/Re and Scra transaction types). Only reject if BOTH are zero.
+    qty     = rec.get("qty", 0)
+    revenue = rec.get("revenue", 0.0)
+    if qty == 0 and revenue == 0.0:
+        return "Zero qty and zero revenue"
     return None

@@ -108,3 +108,11 @@ export async function createProjectionRemark(body)     { return request("/projec
 export async function updateProjectionRemark(id, body) { return request(`/projection-remarks/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
 export async function deleteProjectionRemark(id)       { return request(`/projection-remarks/${id}`, { method: "DELETE" }); }
 export async function getCities() { return request("/analytics/cities"); }
+// ─── SKU Normalisation ────────────────────────────────────────────────────────
+export async function getSkuCanonical(sourceType = "DISTRIBUTOR")        { return request(`/sku/canonical?source_type=${sourceType}`); }
+export async function getSkuUnmapped(sourceType = "DISTRIBUTOR")         { return request(`/sku/unmapped?source_type=${sourceType}`); }
+export async function createSkuCanonical(body)                           { return request("/sku/canonical", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
+export async function updateSkuCanonical(id, body)                       { return request(`/sku/canonical/${id}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
+export async function deleteSkuCanonical(id)                             { return request(`/sku/canonical/${id}`, { method: "DELETE" }); }
+export async function createSkuMapping(body)                             { return request("/sku/mappings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
+export async function deleteSkuMapping(id)                               { return request(`/sku/mappings/${id}`, { method: "DELETE" }); }

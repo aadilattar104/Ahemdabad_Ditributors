@@ -1,7 +1,8 @@
 // ProjectionOverviewCards — 4 KPI cards for the Projections page.
-// Projected values = previous month × 1.10 (10% growth assumption).
-// Blue left-border on all 4 cards. No sub-line text.
-// Matches OverviewCards.jsx style exactly.
+// Projection uses a blended weighted-average growth rate (not a fixed 10%).
+// MoM % badge is suppressed when the previous month has sparse data (returns
+// null from the backend), keeping the UI clean and accurate.
+// Blue left-border on all 4 cards. Matches OverviewCards.jsx style exactly.
 //
 // Props:
 //   data    — projection response from /analytics/projection

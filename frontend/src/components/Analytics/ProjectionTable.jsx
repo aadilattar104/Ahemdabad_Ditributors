@@ -6,6 +6,8 @@
 //   data    — projection response from /analytics/projection
 //   loading — boolean
 
+import { Fragment } from "react";
+
 function fmtRev(n) {
   if (!n && n !== 0) return "—";
   if (n >= 100000) return `₹${(n / 100000).toFixed(1)}L`;
@@ -52,7 +54,10 @@ export default function ProjectionTable({ data, loading = false }) {
               <th style={thStyle("left", "22%")}>SKU</th>
 
               {/* M-2 */}
-              <th colSpan={2} style={thStyle("center", "13%", true)}>{m2Label} (Actual)</th>
+              <th colSpan={2} style={{
+                ...thStyle("center", "13%", true),
+                ...(m2Label === "—" ? { color: "var(--color-text-tertiary)", fontStyle: "italic" } : {}),
+              }}>{m2Label === "—" ? "— (Actual)" : `${m2Label} (Actual)`}</th>
 
               {/* M-1 */}
               <th colSpan={2} style={thStyle("center", "13%", true)}>{m1Label} (Actual)</th>
@@ -75,10 +80,10 @@ export default function ProjectionTable({ data, loading = false }) {
             <tr style={{ background: "var(--color-background-secondary)", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
               <th style={subThStyle("left")} />
               {["m2","m1","m0","proj_next","proj_after"].map((k) => (
-                <>
-                  <th key={`${k}_rev`} style={subThStyle("right")}>Rev</th>
-                  <th key={`${k}_qty`} style={subThStyle("right")}>Qty</th>
-                </>
+                <Fragment key={k}>
+                  <th style={subThStyle("right")}>Rev</th>
+                  <th style={subThStyle("right")}>Qty</th>
+                </Fragment>
               ))}
             </tr>
           </thead>

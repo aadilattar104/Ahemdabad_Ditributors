@@ -11,15 +11,16 @@ import RecurringShopsTable from "../components/RecurringShops/RecurringShopsTabl
 import {
   getOverview, getShops, getMoMTrend, getTopShops,
   getTopShopsByQty, getRecurringShops, getTopShopsSkuBreakdown,
-  getDistributorMoM, getMargins, getCities,
+  getDistributorMoM, getMargins, getCities, getSkuCanonical,
 } from "../services/api";
 
 // Props:
 //   distributors        — string[]  (from App, always fresh)
 //   skus                — string[]  (from App, always fresh)
 //   onDistributorsChange — () => void  (call App to re-fetch after any mutation)
-export default function Dashboard({ distributors = [], skus = [], onDistributorsChange }) {
-  const [filters, setFilters]     = useState({ month: "", year: "", distributor: "", sku: "", city: "" });
+export default function Dashboard({ distributors = [], onDistributorsChange }) {
+  const [filters, setFilters]     = useState({ month: "", year: "", distributor: "", sku: "", city: "", category: "" });
+  const [skus, setSkus]           = useState([]);  // [{ id, name, category, family }]
   const [overview, setOverview]   = useState(null);
   const [shops, setShops]         = useState([]);
   const [trend, setTrend]         = useState([]);
@@ -36,19 +37,22 @@ export default function Dashboard({ distributors = [], skus = [], onDistributors
   // If the selected distributor was deleted/renamed, clear it from the filter
   useEffect(() => {
     if (filters.distributor && !distributors.includes(filters.distributor)) {
-      setFilters((prev) => ({ ...prev, distributor: "" }));
+      setFilters((prev) => ({ ...prev, distributor: "", category: "" }));
     }
   }, [distributors]);
 
-  // Fetch margins + cities once on mount
+  // Fetch margins + cities + canonical SKUs once on mount
   useEffect(() => {
     getMargins().then(setMargins).catch(() => setMargins([]));
     getCities().then(setCities).catch(() => setCities([]));
+    getSkuCanonical("DISTRIBUTOR").then((rows) => setSkus(Array.isArray(rows) ? rows.map((r) => ({ name: r.name, category: r.category })) : [])).catch(() => setSkus([]));
   }, []);
 
   // Reload analytics when filters change
   useEffect(() => {
-    const p = Object.fromEntries(Object.entries(filters).filter(([, v]) => v));
+    // Strip "category" — it is a UI-only filter for narrowing SKU dropdown, not a backend param
+    const { category: _cat, ...rest } = filters;
+    const p = Object.fromEntries(Object.entries(rest).filter(([, v]) => v));
     setLoading(true);
     setError("");
     Promise.all([
