@@ -782,6 +782,65 @@ def mt_list_uploads(chain: str = Query(None)):
     if chain:
         q = q.eq("chain_name", chain)
     return q.execute().data
+@app.delete("/mt/uploads/{upload_id}")
+def delete_mt_upload(upload_id: str):
+    sb = get_supabase()
+
+    row = sb.table("mt_uploads").select("id, chain_name").eq("id", upload_id).execute()
+    if not row.data:
+        raise HTTPException(status_code=404, detail="MT upload not found")
+
+    chain_name = row.data[0].get("chain_name")
+
+    # Delete associated records first
+    sb.table("mt_sales_records").delete().eq("upload_id", upload_id).execute()
+    sb.table("mt_soh_records").delete().eq("upload_id", upload_id).execute()
+
+    # Delete upload row
+    sb.table("mt_uploads").delete().eq("id", upload_id).execute()
+
+    # If no remaining uploads for this chain, remove from mt_chains
+    if chain_name:
+        remaining = sb.table("mt_uploads").select("id").eq("chain_name", chain_name).execute()
+        if not remaining.data:
+            sb.table("mt_chains").delete().eq("chain_name", chain_name).execute()
+            print(f"[MT DELETE] Removed chain '{chain_name}' — no uploads remain")
+
+    return {"ok": True, "deleted_upload_id": upload_id}
+
+
+@app.post("/mt/chains/rename")
+def rename_mt_chain(body: dict):
+    sb = get_supabase()
+
+    old_name = (body.get("old_name") or "").strip().upper()
+    new_name = (body.get("new_name") or "").strip().upper()
+
+    if not old_name or not new_name:
+        raise HTTPException(status_code=400, detail="old_name and new_name are required")
+    if old_name == new_name:
+        raise HTTPException(status_code=400, detail="Names are already the same")
+
+    # 1. Update all mt_uploads rows
+    sb.table("mt_uploads").update({"chain_name": new_name}).eq("chain_name", old_name).execute()
+
+    # 2. Update all mt_sales_records rows
+    sb.table("mt_sales_records").update({"chain_name": new_name}).eq("chain_name", old_name).execute()
+
+    # 3. Update all mt_soh_records rows
+    sb.table("mt_soh_records").update({"chain_name": new_name}).eq("chain_name", old_name).execute()
+
+    # 4. Rename in mt_chains — if new_name already exists, merge by deleting old row
+    existing_new = sb.table("mt_chains").select("id").eq("chain_name", new_name).execute()
+    if existing_new.data:
+        sb.table("mt_chains").delete().eq("chain_name", old_name).execute()
+    else:
+        sb.table("mt_chains").update({"chain_name": new_name}).eq("chain_name", old_name).execute()
+
+    print(f"[MT RENAME] '{old_name}' → '{new_name}'")
+    return {"ok": True, "old_name": old_name, "new_name": new_name}
+
+
 
 
 # =============================================================================

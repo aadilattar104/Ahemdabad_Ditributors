@@ -89,6 +89,14 @@ export async function getMtSoh(params = {})                { return request(`/mt
 
 // ─── Modern Trade — upload history ───────────────────────────────────────────
 export async function getMtUploads(params = {})            { return request(`/mt/uploads${qs(params)}`); }
+export async function deleteMtUpload(uploadId)             { return request(`/mt/uploads/${uploadId}`, { method: "DELETE" }); }
+export async function renameMtChain(oldName, newName) {
+  return request("/mt/chains/rename", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ old_name: oldName, new_name: newName }),
+  });
+}
 export async function getMargins(params = {})              { return request(`/margins${qs(params)}`); }
 // ─── Save single margin inline (NEW) ─────────────────────────────────────────
 export async function saveMargin(shopName, distributorName, marginPct) {
