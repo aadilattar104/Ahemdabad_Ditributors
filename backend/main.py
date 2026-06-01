@@ -15,6 +15,7 @@ from analytics.aggregator import (get_cities, get_projection,
 )
 from exports.exporter import export_to_excel, export_audit_csv
 from analytics.aggregator import get_distributor_mom
+from analytics.aggregator import _load_sku_maps_mt, _apply_sku_filter_mt, _norm_sku_mt
 
 app = FastAPI(title="Excel Intelligence API", version="1.0.0")
 
@@ -305,8 +306,9 @@ def analytics_overview(
     distributor: str = Query(None),
     sku: str = Query(None),
     city: str = Query(None),
+    category: str = Query(None),
 ):
-    return get_overview(month=month, year=year, distributor=distributor, sku=sku, city=city)
+    return get_overview(month=month, year=year, distributor=distributor, sku=sku, city=city, category=category)
 
 
 @app.get("/analytics/shops")
@@ -316,8 +318,9 @@ def analytics_shops(
     distributor: str = Query(None),
     sku: str = Query(None),
     city: str = Query(None),
+    category: str = Query(None),
 ):
-    return get_shops(month=month, year=year, distributor=distributor, sku=sku, city=city)
+    return get_shops(month=month, year=year, distributor=distributor, sku=sku, city=city, category=category)
 
 
 @app.get("/analytics/mom-trend")
@@ -327,8 +330,9 @@ def analytics_mom_trend(
     month: str = Query(None),
     year: int = Query(None),
     city: str = Query(None),
+    category: str = Query(None),
 ):
-    return get_mom_trend(distributor=distributor, sku=sku, month=month, year=year, city=city)
+    return get_mom_trend(distributor=distributor, sku=sku, month=month, year=year, city=city, category=category)
     
 @app.get("/analytics/distributor-mom")
 def analytics_distributor_mom(
@@ -337,8 +341,9 @@ def analytics_distributor_mom(
     month: str = Query(None),
     year: int = Query(None),
     city: str = Query(None),
+    category: str = Query(None),
 ):
-    return get_distributor_mom(distributor=distributor, sku=sku, month=month, year=year, city=city)
+    return get_distributor_mom(distributor=distributor, sku=sku, month=month, year=year, city=city, category=category)
 
 
 @app.get("/analytics/top-shops")
@@ -349,8 +354,9 @@ def analytics_top_shops(
     sku: str = Query(None),
     limit: int = Query(10),
     city: str = Query(None),
+    category: str = Query(None),
 ):
-    return get_top_shops(month=month, year=year, distributor=distributor, sku=sku, limit=limit, city=city)
+    return get_top_shops(month=month, year=year, distributor=distributor, sku=sku, limit=limit, city=city, category=category)
 
 
 @app.get("/analytics/top-shops-by-qty")
@@ -361,8 +367,9 @@ def analytics_top_shops_qty(
     sku: str = Query(None),
     limit: int = Query(10),
     city: str = Query(None),
+    category: str = Query(None),
 ):
-    return get_top_shops_by_qty(month=month, year=year, distributor=distributor, sku=sku, limit=limit, city=city)
+    return get_top_shops_by_qty(month=month, year=year, distributor=distributor, sku=sku, limit=limit, city=city, category=category)
 
 
 @app.get("/analytics/cities")
@@ -382,8 +389,9 @@ def analytics_recurring_shops(
     distributor: str = Query(None),
     sku: str = Query(None),
     city: str = Query(None),
+    category: str = Query(None),
 ):
-    return get_recurring_shops(month=month, year=year, distributor=distributor, sku=sku, city=city)
+    return get_recurring_shops(month=month, year=year, distributor=distributor, sku=sku, city=city, category=category)
 
 
 @app.get("/analytics/top-shops-sku-breakdown")
@@ -394,8 +402,9 @@ def analytics_top_shops_sku_breakdown(
     sku: str = Query(None),
     limit: int = Query(10),
     city: str = Query(None),
+    category: str = Query(None),
 ):
-    return get_top_shops_sku_breakdown(month=month, year=year, distributor=distributor, sku=sku, limit=limit, city=city)
+    return get_top_shops_sku_breakdown(month=month, year=year, distributor=distributor, sku=sku, limit=limit, city=city, category=category)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -655,18 +664,33 @@ def mt_analytics_months(chain: str = Query(None)):
 
 @app.get("/mt/analytics/skus")
 def mt_analytics_skus(chain: str = Query(None)):
+    """
+    Returns canonical SKU names (from sku_canonical where source_type=MT mappings exist).
+    Falls back to raw SKU names for any unmapped SKUs.
+    """
     sb = get_supabase()
     q  = sb.table("mt_sales_records").select("sku_name")
     if chain:
         q = q.eq("chain_name", chain)
     rows = q.execute().data
-    skus = sorted({r["sku_name"] for r in rows})
-    return [{"sku_name": s} for s in skus]
+    raw_skus = {r["sku_name"] for r in rows}
+
+    # Resolve raw → canonical using MT mappings
+    aliases_mt, _ = _load_sku_maps_mt()
+    canonical_skus = sorted({aliases_mt.get(s, s) for s in raw_skus})
+    return [{"sku_name": s} for s in canonical_skus]
 
 
 # ── MT Chart Data ─────────────────────────────────────────────────────────────
 
 def _mt_sales_query(sb, chain, store, month, year, sku):
+    """
+    Fetch MT sales rows with canonical SKU resolution.
+    `sku` param is a canonical name — expanded to raw names via MT mappings.
+    Returned rows have sku_name replaced with canonical name.
+    """
+    aliases_mt, reverse_mt = _load_sku_maps_mt()
+
     q = sb.table("mt_sales_records").select(
         "chain_name, store_code, store_name, sku_name, qty, revenue, month, year"
     )
@@ -674,8 +698,18 @@ def _mt_sales_query(sb, chain, store, month, year, sku):
     if store: q = q.eq("store_code", store)
     if month: q = q.eq("month", month)
     if year:  q = q.eq("year", int(year))
-    if sku:   q = q.eq("sku_name", sku)
-    return q.execute().data
+    # Don't filter by sku_name at DB level — filter after canonical resolution below
+    rows = q.execute().data
+
+    # Normalise raw SKU names → canonical names in every row
+    for r in rows:
+        r["sku_name"] = _norm_sku_mt(r.get("sku_name"), aliases_mt)
+
+    # Apply canonical SKU filter in Python after normalisation
+    if sku:
+        rows = [r for r in rows if r["sku_name"] == sku]
+
+    return rows
 
 
 @app.get("/mt/analytics/revenue")
@@ -712,6 +746,7 @@ def mt_analytics_qty(
 def mt_analytics_soh(
     chain: str = Query(None), store: str = Query(None), sku: str = Query(None),
 ):
+    """SOH with canonical SKU resolution. sku param is canonical name."""
     sb = get_supabase()
     uq = sb.table("mt_uploads").select("id").eq("status", "success")
     if chain:
@@ -724,8 +759,18 @@ def mt_analytics_soh(
         "store_code, store_name, sku_name, soh_qty, soh_value, map_price"
     ).eq("upload_id", latest_upload_id)
     if store: q = q.eq("store_code", store)
-    if sku:   q = q.eq("sku_name", sku)
-    return q.execute().data
+    rows = q.execute().data
+
+    # Normalise raw → canonical SKU names
+    aliases_mt, _ = _load_sku_maps_mt()
+    for r in rows:
+        r["sku_name"] = _norm_sku_mt(r.get("sku_name"), aliases_mt)
+
+    # Apply canonical SKU filter in Python
+    if sku:
+        rows = [r for r in rows if r["sku_name"] == sku]
+
+    return rows
 
 
 # ── MT Upload History ─────────────────────────────────────────────────────────

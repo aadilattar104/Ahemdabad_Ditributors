@@ -34,8 +34,29 @@ export default function SkuTree({
   canonicals, catFilter, tab, saving,
   onEditSave, onDelete, onAddMapping, onDelMapping,
 }) {
-  const [collapsed, setCollapsed] = useState({});
-  const toggle = (key) => setCollapsed((p) => ({ ...p, [key]: !p[key] }));
+  const [collapsed, setCollapsed]         = useState({});
+  const [editingFamily, setEditingFamily] = useState(null);
+  const [familyDraft, setFamilyDraft]     = useState("");
+
+  const toggle = (key) => {
+    if (editingFamily === key) return;
+    setCollapsed((p) => ({ ...p, [key]: !p[key] }));
+  };
+
+  const startRenameFamily = (e, key, currentName) => {
+    e.stopPropagation();
+    setEditingFamily(key);
+    setFamilyDraft(currentName);
+  };
+
+  const commitRenameFamily = (group) => {
+    const trimmed = familyDraft.trim();
+    if (trimmed && trimmed !== group.family) {
+      group.items.forEach((c) => onEditSave(c.id, "family", trimmed));
+    }
+    setEditingFamily(null);
+    setFamilyDraft("");
+  };
 
   // Group into { "Category||Family": { category, family, items[] } }
   const groups = {};
@@ -71,10 +92,39 @@ export default function SkuTree({
                 style={S.chevron}
               />
               <CategoryBadge category={group.category} />
-              <span style={S.familyName}>{group.family}</span>
+
+              {editingFamily === key ? (
+                <input
+                  autoFocus
+                  value={familyDraft}
+                  onChange={(e) => setFamilyDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter")  commitRenameFamily(group);
+                    if (e.key === "Escape") { setEditingFamily(null); setFamilyDraft(""); }
+                  }}
+                  onBlur={() => commitRenameFamily(group)}
+                  onClick={(e) => e.stopPropagation()}
+                  style={S.familyInput}
+                />
+              ) : (
+                <span style={S.familyName}>{group.family}</span>
+              )}
+
               <span style={S.variantCount}>
                 {group.items.length} size variant{group.items.length !== 1 ? "s" : ""}
               </span>
+
+              {/* Rename family button */}
+              {editingFamily !== key && (
+                <button
+                  onClick={(e) => startRenameFamily(e, key, group.family)}
+                  style={S.iconBtn}
+                  title="Rename family"
+                  disabled={saving}
+                >
+                  <i className="ti ti-pencil" style={{ fontSize: 12 }} />
+                </button>
+              )}
             </div>
 
             {/* Canonical SKU rows */}
@@ -116,6 +166,19 @@ const S = {
   familyName:   { fontWeight: 600, fontSize: 14, color: "var(--color-text-primary)", flex: 1 },
   variantCount: { fontSize: 12, color: "var(--color-text-tertiary)" },
   variantList:  { marginTop: 12 },
+  familyInput: {
+    fontSize: 14, fontWeight: 600, padding: "2px 8px",
+    borderRadius: "var(--border-radius-md)",
+    border: "0.5px solid var(--color-border-secondary)",
+    background: "var(--color-background-primary)",
+    color: "var(--color-text-primary)", outline: "none",
+    flex: 1, minWidth: 120,
+  },
+  iconBtn: {
+    background: "transparent", border: "none", cursor: "pointer",
+    padding: "2px 4px", borderRadius: "var(--border-radius-sm)",
+    color: "var(--color-text-secondary)", display: "inline-flex", alignItems: "center",
+  },
   empty: {
     background: "var(--color-background-primary)",
     border: "0.5px solid var(--color-border-tertiary)",

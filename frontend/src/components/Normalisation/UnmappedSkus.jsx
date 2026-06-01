@@ -1,18 +1,19 @@
 // UnmappedSkus.jsx
 // Shows raw SKUs not yet mapped to any canonical.
-// Each chip shows the raw SKU name + source distributor/chain tags.
-// Clicking the arrow icon pre-fills the mapping form on a chosen canonical.
+// Each chip shows source distributor tag + raw SKU name.
+// Multiple chips can be selected at once → pick one canonical → map all in one shot.
 // Props:
 //   unmapped    — [{ raw_sku, sources: string[] }]
 //   canonicals  — [{ id, category, family, name }]
 //   tab         — "DISTRIBUTOR" | "MT"
 //   saving      — boolean
-//   onMap       — ({ canonicalId, rawSku, sourceName }) => void
+//   onMap       — ({ canonicalId, rawSku, sourceName }) => void  (called once per selection)
 
 import { useState } from "react";
 
 export default function UnmappedSkus({ unmapped = [], canonicals = [], tab, saving, onMap }) {
-  const [selected, setSelected] = useState(null); // { raw_sku, source }
+  // selected: Set of "raw_sku||source" keys
+  const [selected, setSelected]     = useState(new Set());
   const [canonicalId, setCanonicalId] = useState("");
 
   if (unmapped.length === 0) {
@@ -26,11 +27,34 @@ export default function UnmappedSkus({ unmapped = [], canonicals = [], tab, savi
     );
   }
 
-  const handleQuickMap = () => {
-    if (!selected || !canonicalId) return;
-    onMap({ canonicalId, rawSku: selected.raw_sku, sourceName: selected.source });
-    setSelected(null); setCanonicalId("");
+  const toggleChip = (raw_sku, src) => {
+    const key = `${raw_sku}||${src}`;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
   };
+
+  const selectAll = () => {
+    const all = new Set();
+    unmapped.forEach((u) => u.sources.forEach((src) => all.add(`${u.raw_sku}||${src}`)));
+    setSelected(all);
+  };
+
+  const clearSelection = () => { setSelected(new Set()); setCanonicalId(""); };
+
+  const handleMapAll = async () => {
+    if (!canonicalId || selected.size === 0) return;
+    for (const key of selected) {
+      const [rawSku, sourceName] = key.split("||");
+      await onMap({ canonicalId, rawSku, sourceName });
+    }
+    setSelected(new Set());
+    setCanonicalId("");
+  };
+
+  const selectedCount = selected.size;
 
   return (
     <div style={S.card}>
@@ -41,45 +65,44 @@ export default function UnmappedSkus({ unmapped = [], canonicals = [], tab, savi
         <span style={S.count}>
           {unmapped.length} raw SKU{unmapped.length !== 1 ? "s" : ""} not yet assigned
         </span>
+        {/* Select all / clear */}
+        <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
+          <button onClick={selectAll} style={S.btnGhost}>Select all</button>
+          {selectedCount > 0 && (
+            <button onClick={clearSelection} style={S.btnGhost}>Clear</button>
+          )}
+        </div>
       </div>
 
-      {/* Chips */}
+      {/* Chips — multi-select */}
       <div style={S.chipGrid}>
         {unmapped.map((u) =>
           u.sources.map((src) => {
-            const isActive = selected?.raw_sku === u.raw_sku && selected?.source === src;
+            const key      = `${u.raw_sku}||${src}`;
+            const isActive = selected.has(key);
             return (
               <div
-                key={`${u.raw_sku}||${src}`}
+                key={key}
+                onClick={() => toggleChip(u.raw_sku, src)}
+                title="Click to select"
                 style={{ ...S.chip, ...(isActive ? S.chipActive : {}) }}
               >
-                {/* Source tag */}
+                {isActive && (
+                  <i className="ti ti-check" style={{ fontSize: 11, color: "var(--color-text-info, #378ADD)", flexShrink: 0 }} />
+                )}
                 <span style={S.srcTag}>{src}</span>
-                {/* Raw SKU name */}
                 <span style={S.chipText}>{u.raw_sku}</span>
-                {/* Quick-map arrow */}
-                <button
-                  title="Map this to a canonical SKU"
-                  onClick={() => {
-                    setSelected(isActive ? null : { raw_sku: u.raw_sku, source: src });
-                    setCanonicalId("");
-                  }}
-                  style={S.mapBtn}
-                >
-                  <i className="ti ti-corner-up-left" style={{ fontSize: 12 }} />
-                </button>
               </div>
             );
           })
         )}
       </div>
 
-      {/* Quick-map panel — shown when a chip is selected */}
-      {selected && (
+      {/* Bulk-map panel — shown when ≥1 chip selected */}
+      {selectedCount > 0 && (
         <div style={S.mapPanel}>
           <p style={S.mapLabel}>
-            Mapping: <strong style={{ color: "var(--color-text-info, #378ADD)" }}>{selected.raw_sku}</strong>
-            <span style={S.srcTag2}>{selected.source}</span>
+            Map <strong style={{ color: "var(--color-text-info, #378ADD)" }}>{selectedCount} SKU{selectedCount !== 1 ? "s" : ""}</strong> to:
           </p>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
             <select
@@ -95,18 +118,33 @@ export default function UnmappedSkus({ unmapped = [], canonicals = [], tab, savi
               ))}
             </select>
             <button
-              onClick={handleQuickMap}
+              onClick={handleMapAll}
               disabled={saving || !canonicalId}
               style={S.btnPrimary}
             >
-              {saving ? "Saving…" : "Map"}
+              {saving ? "Saving…" : `Map ${selectedCount} SKU${selectedCount !== 1 ? "s" : ""}`}
             </button>
-            <button
-              onClick={() => { setSelected(null); setCanonicalId(""); }}
-              style={S.btnGhost}
-            >
-              Cancel
-            </button>
+            <button onClick={clearSelection} style={S.btnGhost}>Cancel</button>
+          </div>
+
+          {/* Preview of selected */}
+          <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 4 }}>
+            {[...selected].map((key) => {
+              const [rawSku, src] = key.split("||");
+              return (
+                <div key={key} style={S.previewChip}>
+                  <span style={S.srcTag}>{src}</span>
+                  <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{rawSku}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleChip(rawSku, src); }}
+                    style={S.removeBtn}
+                    title="Remove from selection"
+                  >
+                    <i className="ti ti-x" style={{ fontSize: 10 }} />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -121,35 +159,29 @@ const S = {
     borderRadius: "var(--border-radius-lg)",
     padding: "14px 16px", marginTop: 20,
   },
-  header: { display: "flex", alignItems: "center", gap: 8, marginBottom: 12 },
-  title: { fontWeight: 600, fontSize: 14, color: "var(--color-text-primary)" },
-  count: { fontSize: 12, color: "var(--color-text-tertiary)" },
+  header: { display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" },
+  title:  { fontWeight: 600, fontSize: 14, color: "var(--color-text-primary)" },
+  count:  { fontSize: 12, color: "var(--color-text-tertiary)" },
   chipGrid: { display: "flex", flexWrap: "wrap", gap: 6 },
   chip: {
     display: "inline-flex", alignItems: "center", gap: 5,
-    padding: "4px 8px",
+    padding: "4px 10px",
     background: "var(--color-background-secondary)",
     border: "0.5px solid var(--color-border-tertiary)",
-    borderRadius: 20, cursor: "default",
+    borderRadius: 20, cursor: "pointer",
+    transition: "border-color 0.1s, background 0.1s",
   },
   chipActive: {
     border: "0.5px solid var(--color-text-info, #378ADD)",
-    background: "rgba(55,138,221,0.07)",
+    background: "rgba(55,138,221,0.08)",
   },
   srcTag: {
     fontSize: 10, padding: "1px 6px", borderRadius: 20, fontWeight: 600,
     background: "rgba(245,158,11,0.12)", color: "#F59E0B", flexShrink: 0,
   },
-  srcTag2: {
-    fontSize: 10, padding: "1px 6px", borderRadius: 20, fontWeight: 600,
-    background: "rgba(245,158,11,0.12)", color: "#F59E0B",
-    marginLeft: 8, display: "inline-block",
-  },
-  chipText: { fontSize: 12, color: "var(--color-text-secondary)", maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  mapBtn: {
-    background: "transparent", border: "none", cursor: "pointer",
-    padding: "1px 3px", color: "var(--color-text-info, #378ADD)",
-    display: "inline-flex", alignItems: "center",
+  chipText: {
+    fontSize: 12, color: "var(--color-text-secondary)",
+    maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
   },
   mapPanel: {
     marginTop: 14, padding: "12px 14px",
@@ -157,7 +189,19 @@ const S = {
     border: "0.5px solid var(--color-border-tertiary)",
     borderRadius: "var(--border-radius-md)",
   },
-  mapLabel: { margin: "0 0 10px", fontSize: 13, color: "var(--color-text-primary)", display: "flex", alignItems: "center" },
+  mapLabel: { margin: "0 0 10px", fontSize: 13, color: "var(--color-text-primary)" },
+  previewChip: {
+    display: "inline-flex", alignItems: "center", gap: 4,
+    padding: "2px 6px",
+    background: "var(--color-background-primary)",
+    border: "0.5px solid var(--color-border-secondary)",
+    borderRadius: 20,
+  },
+  removeBtn: {
+    background: "transparent", border: "none", cursor: "pointer",
+    padding: "1px 2px", color: "var(--color-text-danger)",
+    display: "inline-flex", alignItems: "center",
+  },
   select: {
     fontSize: 13, padding: "5px 8px", borderRadius: "var(--border-radius-md)",
     border: "0.5px solid var(--color-border-secondary)",

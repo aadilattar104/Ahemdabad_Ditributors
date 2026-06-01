@@ -45,6 +45,33 @@ def _load_sku_maps(source_type: str = "DISTRIBUTOR") -> tuple[dict, dict]:
         return {}, {}
 
 
+def _load_sku_maps_mt() -> tuple[dict, dict]:
+    """Same as _load_sku_maps but for source_type=MT (mt_sales_records)."""
+    return _load_sku_maps("MT")
+
+
+def _apply_sku_filter_mt(rows: list[dict], sku: str | None, reverse: dict) -> list[dict]:
+    """
+    Filter a list of mt_sales_records dicts by canonical SKU name.
+    Used after fetching rows in Python (MT data is small enough).
+    If sku is a canonical name, expand to all mapped raw SKUs.
+    Falls back to exact match if no mapping exists.
+    """
+    if not sku:
+        return rows
+    raw_names = reverse.get(sku)
+    if raw_names:
+        raw_set = set(raw_names)
+        return [r for r in rows if r.get("sku_name") in raw_set]
+    return [r for r in rows if r.get("sku_name") == sku]
+
+
+def _norm_sku_mt(name: str | None, aliases: dict) -> str:
+    """Normalise a raw MT SKU name to its canonical name."""
+    raw = (name or "").strip()
+    return aliases.get(raw, raw)
+
+
 def _month_order(month: str | None) -> int:
     if not month:
         return 99
@@ -60,25 +87,49 @@ def _norm_sku(name: str | None, aliases: dict) -> str:
     return aliases.get(raw, raw)
 
 
-def _apply_sku_filter(query, sku: str | None, reverse: dict):
+def _apply_sku_filter(query, sku: str | None, reverse: dict, category_raw_skus: list | None = None):
     """Apply SKU filter using pre-loaded reverse map. Never hits DB."""
-    if not sku:
-        return query
-    raw_names = reverse.get(sku)
-    if raw_names:
-        return query.in_("sku_name", raw_names)
-    return query.eq("sku_name", sku)
+    if sku:
+        raw_names = reverse.get(sku)
+        if raw_names:
+            return query.in_("sku_name", raw_names)
+        return query.eq("sku_name", sku)
+    if category_raw_skus:
+        return query.in_("sku_name", category_raw_skus)
+    return query
 
 
-def get_overview(month=None, year=None, distributor=None, sku=None, city=None) -> dict:
+def _get_raw_skus_for_category(category: str) -> list[str]:
+    """Returns all raw SKU names mapped to any canonical in the given category."""
+    if not category:
+        return []
+    try:
+        sb = get_supabase()
+        canonicals = sb.table("sku_canonical").select("id").eq("category", category).execute().data
+        if not canonicals:
+            return []
+        canonical_ids = [c["id"] for c in canonicals]
+        mappings = (
+            sb.table("sku_mappings").select("raw_sku")
+            .in_("canonical_id", canonical_ids)
+            .eq("source_type", "DISTRIBUTOR").execute().data
+        )
+        return [m["raw_sku"] for m in mappings if m.get("raw_sku")]
+    except Exception as e:
+        print(f"[SKU CATEGORY] Warning: {e}")
+        return []
+
+
+def get_overview(month=None, year=None, distributor=None, sku=None, city=None, category=None) -> dict:
     aliases, reverse = _load_sku_maps("DISTRIBUTOR")
+    cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, shop_name, qty, revenue")
     if month:       query = query.eq("month", month)
     if year:        query = query.eq("year", year)
     if distributor: query = query.eq("distributor_name", distributor)
     if city:        query = query.eq("city", city)
-    query = _apply_sku_filter(query, sku, reverse)
+    query = _apply_sku_filter(query, sku, reverse, cat_skus)
     rows = query.execute().data
 
     total_revenue     = round(sum(r["revenue"] for r in rows), 2)
@@ -113,8 +164,9 @@ def get_overview(month=None, year=None, distributor=None, sku=None, city=None) -
     }
 
 
-def get_shops(month=None, year=None, distributor=None, sku=None, city=None) -> list[dict]:
+def get_shops(month=None, year=None, distributor=None, sku=None, city=None, category=None) -> list[dict]:
     aliases, reverse = _load_sku_maps("DISTRIBUTOR")
+    cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select(
         "distributor_name, shop_name, shop_type, qty, revenue, month, year, bill_no"
@@ -123,7 +175,7 @@ def get_shops(month=None, year=None, distributor=None, sku=None, city=None) -> l
     if year:        query = query.eq("year", year)
     if distributor: query = query.eq("distributor_name", distributor)
     if city:        query = query.eq("city", city)
-    query = _apply_sku_filter(query, sku, reverse)
+    query = _apply_sku_filter(query, sku, reverse, cat_skus)
     rows = query.execute().data
 
     shop_map: dict[tuple, dict] = {}
@@ -152,15 +204,16 @@ def get_shops(month=None, year=None, distributor=None, sku=None, city=None) -> l
     return sorted(shops, key=lambda x: x["revenue"], reverse=True)
 
 
-def get_mom_trend(distributor=None, sku=None, month=None, year=None, city=None):
+def get_mom_trend(distributor=None, sku=None, month=None, year=None, city=None, category=None):
     aliases, reverse = _load_sku_maps("DISTRIBUTOR")
+    cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, month, year, qty, revenue")
     if distributor: query = query.eq("distributor_name", distributor)
     if month:       query = query.eq("month", month)
     if year:        query = query.eq("year", year)
     if city:        query = query.eq("city", city)
-    query = _apply_sku_filter(query, sku, reverse)
+    query = _apply_sku_filter(query, sku, reverse, cat_skus)
     rows = query.execute().data
 
     trend_map: dict[tuple, dict] = {}
@@ -177,12 +230,12 @@ def get_mom_trend(distributor=None, sku=None, month=None, year=None, city=None):
     return sorted(trend, key=lambda x: (x["year"] or 0, _month_order(x["month"])))
 
 
-def get_top_shops(month=None, year=None, distributor=None, sku=None, city=None, limit=10) -> list[dict]:
-    return get_shops(month=month, year=year, distributor=distributor, sku=sku, city=city)[:limit]
+def get_top_shops(month=None, year=None, distributor=None, sku=None, city=None, limit=10, category=None) -> list[dict]:
+    return get_shops(month=month, year=year, distributor=distributor, sku=sku, city=city, category=category)[:limit]
 
 
-def get_top_shops_by_qty(month=None, year=None, distributor=None, sku=None, city=None, limit=10) -> list[dict]:
-    shops = get_shops(month=month, year=year, distributor=distributor, sku=sku, city=city)
+def get_top_shops_by_qty(month=None, year=None, distributor=None, sku=None, city=None, limit=10, category=None) -> list[dict]:
+    shops = get_shops(month=month, year=year, distributor=distributor, sku=sku, city=city, category=category)
     return sorted(shops, key=lambda x: x["qty"], reverse=True)[:limit]
 
 
@@ -205,12 +258,13 @@ def get_skus() -> list[str]:
     return sorted({aliases.get(r["sku_name"], r["sku_name"]) for r in rows if r.get("sku_name")})
 
 
-def get_recurring_shops(month=None, year=None, distributor=None, sku=None, city=None) -> list[dict]:
+def get_recurring_shops(month=None, year=None, distributor=None, sku=None, city=None, category=None) -> list[dict]:
     """
     Returns shops that placed orders on multiple different dates in the same month.
     Only shops with 2+ distinct bill_dates are included.
     """
     aliases, reverse = _load_sku_maps("DISTRIBUTOR")   # load ONCE
+    cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select(
         "distributor_name, shop_name, sku_name, bill_no, bill_date, qty, revenue"
@@ -219,7 +273,7 @@ def get_recurring_shops(month=None, year=None, distributor=None, sku=None, city=
     if year:        query = query.eq("year", year)
     if distributor: query = query.eq("distributor_name", distributor)
     if city:        query = query.eq("city", city)
-    query = _apply_sku_filter(query, sku, reverse)      # pass reverse — no extra DB call
+    query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
     rows = query.execute().data
 
     shop_dates: dict[tuple, set] = defaultdict(set)
@@ -235,16 +289,17 @@ def get_recurring_shops(month=None, year=None, distributor=None, sku=None, city=
     return sorted(result, key=lambda x: (x["shop_name"].upper(), x["bill_date"] or ""))
 
 
-def get_top_shops_sku_breakdown(month=None, year=None, distributor=None, sku=None, city=None, limit=10) -> dict:
+def get_top_shops_sku_breakdown(month=None, year=None, distributor=None, sku=None, city=None, limit=10, category=None) -> dict:
     """Returns SKU-level breakdown for top shops by revenue AND top shops by qty."""
     aliases, reverse = _load_sku_maps("DISTRIBUTOR")   # load ONCE
+    cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select("shop_name, sku_name, qty, revenue")
     if month:       query = query.eq("month", month)
     if year:        query = query.eq("year", year)
     if distributor: query = query.eq("distributor_name", distributor)
     if city:        query = query.eq("city", city)
-    query = _apply_sku_filter(query, sku, reverse)      # pass reverse — no extra DB call
+    query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
     rows = query.execute().data
 
     agg: dict[tuple, dict] = {}
@@ -270,15 +325,16 @@ def get_top_shops_sku_breakdown(month=None, year=None, distributor=None, sku=Non
     return {"by_revenue": by_revenue, "by_qty": by_qty}
 
 
-def get_distributor_mom(distributor=None, sku=None, month=None, year=None, city=None):
+def get_distributor_mom(distributor=None, sku=None, month=None, year=None, city=None, category=None):
     aliases, reverse = _load_sku_maps("DISTRIBUTOR")   # load ONCE
+    cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, month, year, qty, revenue")
     if distributor: query = query.eq("distributor_name", distributor)
     if month:       query = query.eq("month", month)
     if year:        query = query.eq("year", year)
     if city:        query = query.eq("city", city)
-    query = _apply_sku_filter(query, sku, reverse)      # pass reverse — no extra DB call
+    query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
     rows = query.execute().data
 
     agg: dict[tuple, dict] = {}

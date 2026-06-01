@@ -50,9 +50,8 @@ export default function Dashboard({ distributors = [], onDistributorsChange }) {
 
   // Reload analytics when filters change
   useEffect(() => {
-    // Strip "category" — it is a UI-only filter for narrowing SKU dropdown, not a backend param
-    const { category: _cat, ...rest } = filters;
-    const p = Object.fromEntries(Object.entries(rest).filter(([, v]) => v));
+    // Send category to backend — aggregator resolves it to raw SKU names via sku_canonical table
+    const p = Object.fromEntries(Object.entries(filters).filter(([, v]) => v));
     setLoading(true);
     setError("");
     Promise.all([
