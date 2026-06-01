@@ -3,6 +3,38 @@ from collections import defaultdict
 
 
 # ---------------------------------------------------------------------------
+# Pagination helper — bypasses Supabase PostgREST 1 000-row default cap
+# ---------------------------------------------------------------------------
+
+_PAGE = 1000   # rows per request; matches PostgREST default max
+
+
+def _fetch_all(query) -> list[dict]:
+    """
+    Fetch every row matching a Supabase query, regardless of table size.
+
+    Supabase PostgREST silently truncates results at 1 000 rows when no
+    .range() is specified.  Without this helper, the "All distributors"
+    aggregate totals come out LOWER than the sum of individual distributors
+    because the combined table exceeds the cap.
+
+    Usage — replace every bare:
+        rows = _fetch_all(query)
+    with:
+        rows = _fetch_all(query)
+    """
+    rows: list[dict] = []
+    offset = 0
+    while True:
+        batch = query.range(offset, offset + _PAGE - 1).execute().data or []
+        rows.extend(batch)
+        if len(batch) < _PAGE:
+            break
+        offset += _PAGE
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # SKU normalisation — DB-driven, fetched fresh on every request
 # ---------------------------------------------------------------------------
 
@@ -130,7 +162,7 @@ def get_overview(month=None, year=None, distributor=None, sku=None, city=None, c
     if distributor: query = query.eq("distributor_name", distributor)
     if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)
-    rows = query.execute().data
+    rows = _fetch_all(query)
 
     total_revenue     = round(sum(r["revenue"] for r in rows), 2)
     total_qty         = sum(r["qty"] for r in rows)
@@ -176,7 +208,7 @@ def get_shops(month=None, year=None, distributor=None, sku=None, city=None, cate
     if distributor: query = query.eq("distributor_name", distributor)
     if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)
-    rows = query.execute().data
+    rows = _fetch_all(query)
 
     shop_map: dict[tuple, dict] = {}
     for r in rows:
@@ -214,7 +246,7 @@ def get_mom_trend(distributor=None, sku=None, month=None, year=None, city=None, 
     if year:        query = query.eq("year", year)
     if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)
-    rows = query.execute().data
+    rows = _fetch_all(query)
 
     trend_map: dict[tuple, dict] = {}
     for r in rows:
@@ -254,7 +286,7 @@ def get_skus() -> list[str]:
         pass
     aliases, _ = _load_sku_maps("DISTRIBUTOR")
     sb = get_supabase()
-    rows = sb.table("sales_records").select("sku_name").execute().data
+    rows = _fetch_all(sb.table("sales_records").select("sku_name"))
     return sorted({aliases.get(r["sku_name"], r["sku_name"]) for r in rows if r.get("sku_name")})
 
 
@@ -274,7 +306,7 @@ def get_recurring_shops(month=None, year=None, distributor=None, sku=None, city=
     if distributor: query = query.eq("distributor_name", distributor)
     if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
-    rows = query.execute().data
+    rows = _fetch_all(query)
 
     shop_dates: dict[tuple, set] = defaultdict(set)
     for r in rows:
@@ -300,7 +332,7 @@ def get_top_shops_sku_breakdown(month=None, year=None, distributor=None, sku=Non
     if distributor: query = query.eq("distributor_name", distributor)
     if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
-    rows = query.execute().data
+    rows = _fetch_all(query)
 
     agg: dict[tuple, dict] = {}
     shop_totals_rev: dict[str, float] = {}
@@ -335,7 +367,7 @@ def get_distributor_mom(distributor=None, sku=None, month=None, year=None, city=
     if year:        query = query.eq("year", year)
     if city:        query = query.eq("city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
-    rows = query.execute().data
+    rows = _fetch_all(query)
 
     agg: dict[tuple, dict] = {}
     for r in rows:
@@ -527,5 +559,5 @@ def get_projection(distributor: str | None = None) -> dict:
 
 def get_cities() -> list[str]:
     sb = get_supabase()
-    rows = sb.table("sales_records").select("city").execute().data
+    rows = _fetch_all(sb.table("sales_records").select("city"))
     return sorted({r["city"] for r in rows if r.get("city")})

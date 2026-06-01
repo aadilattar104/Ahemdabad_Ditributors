@@ -391,34 +391,63 @@ def _parse_universal_grouped(
     Parse Universal Marketing Sales Register format.
 
     Structure:
-      Header: Date | Particulars | Voucher Type | Voucher No. | Quantity | Rate | Value | Sales
-      Invoice row: col0=date, col1=shop_name, col2="Sales", col3=voucher_no, col4=total_qty, col6=total_value
-      Detail row:  col0=None,  col1=sku_name, col2="",      col3="",          col4=qty,        col5=rate, col6=value
+      Header: Date | Particulars | Voucher Type | Voucher No. | Quantity | Rate | Value | Gross Total
+      Invoice row (col0 = date):  col1=shop_name, col3=voucher_no, col6=net_value, col7=gross_total
+      Detail row  (col0 = blank): col1=sku_name,  col4=qty, col5=rate, col6=sku_value
 
-    Revenue = col6 (Value) on detail rows.
-    City = "Mumbai" (Universal Marketing is Mumbai-based).
-    Negative qty rows (returns) are included as-is.
+    Revenue strategy:
+      col7 (Gross Total) is ONLY present on the invoice header row, never on detail rows.
+      Each detail row's revenue is scaled proportionally:
+          detail_revenue = detail_col6 / invoice_col6_total  *  invoice_col7_gross
+      This distributes the gross total across SKUs in proportion to their net values.
+
+      Fallback: if col7 is absent or zero (e.g. older April format where both
+      columns are identical), scale = 1.0 so col6 is used unchanged.
+
+    City = "Mumbai". Returns/negatives are included as-is.
     """
-    records = []
+    records           = []
     current_shop      = None
     current_shop_type = "REGULAR"
     current_bill_no   = None
     current_bill_date = None
+    current_gross     = None   # col7 Gross Total from invoice header row
+    current_value     = None   # col6 Value total from invoice header row (scale denominator)
+    pending_details   = []     # buffer detail rows; flushed on next invoice or EOF
 
-    # col indices for this format
-    DATE_COL    = 0
-    SHOP_COL    = 1
-    VTYPE_COL   = 2
-    BILLNO_COL  = 3
-    QTY_COL     = 4
-    RATE_COL    = 5
-    VALUE_COL   = 6
+    DATE_COL      = 0
+    SHOP_COL      = 1
+    BILLNO_COL    = 3
+    QTY_COL       = 4
+    RATE_COL      = 5
+    VALUE_COL     = 6   # net value — on both header and detail rows
+    GROSS_TOT_COL = 7   # gross / MRP total — ONLY on header row
+
+    def _flush():
+        """Emit buffered detail rows, scaling each revenue to the invoice gross total."""
+        if not pending_details:
+            return
+        detail_sum = sum(d["_raw_rev"] for d in pending_details)
+        # Scale factor: gross / sum-of-detail-values.
+        # Guard: only apply when both gross and detail_sum are non-zero.
+        if current_gross and detail_sum:
+            scale = current_gross / detail_sum
+        else:
+            scale = 1.0
+        for d in pending_details:
+            rec = _make(
+                d["dist"], d["shop"], d["shop_type"],
+                d["sku"],  d["bill_no"], d["bill_date"],
+                d["qty"],  d["rate"],    round(d["_raw_rev"] * scale, 2),
+            )
+            rec["city"] = "Mumbai"
+            records.append(rec)
+        pending_details.clear()
 
     for i in range(header_idx + 1, len(df)):
         row  = df.iloc[i]
         col0 = row.iloc[DATE_COL] if len(row) > DATE_COL else None
         col1 = row.iloc[SHOP_COL] if len(row) > SHOP_COL else None
-        col2 = row.iloc[VTYPE_COL] if len(row) > VTYPE_COL else None
 
         if _is_grand_total(row):
             break
@@ -428,21 +457,25 @@ def _parse_universal_grouped(
         # ── Invoice header row: col0 has a date ──────────────────────────────
         parsed_date = _parse_date(col0)
         if parsed_date is not None and col1 and _str(col1):
+            _flush()  # emit the previous invoice's buffered details first
             current_bill_date = parsed_date
             current_shop, current_shop_type = clean_shop_name(_str(col1))
             current_bill_no = _str(row.iloc[BILLNO_COL]) if len(row) > BILLNO_COL else None
+            # Capture both value columns from the header row
+            current_value = _safe_float(row.iloc[VALUE_COL])     if len(row) > VALUE_COL     else None
+            gross_raw     = row.iloc[GROSS_TOT_COL]              if len(row) > GROSS_TOT_COL else None
+            current_gross = _safe_float(gross_raw) if not _is_blank_val(gross_raw) else None
             continue
 
         # ── Detail row: col0 blank, col1 = SKU name ───────────────────────────
         if current_shop and _is_blank_val(col0) and col1 and _str(col1):
-            sku     = _str(col1)
-            # Skip sub-header or blank sku
+            sku = _str(col1)
             if not sku or sku.lower() in ("particulars", "item", "description", ""):
                 continue
 
-            qty_raw = row.iloc[QTY_COL] if len(row) > QTY_COL else None
-            rev_raw = row.iloc[VALUE_COL] if len(row) > VALUE_COL else None
-            rate_raw = row.iloc[RATE_COL] if len(row) > RATE_COL else None
+            qty_raw  = row.iloc[QTY_COL]  if len(row) > QTY_COL  else None
+            rev_raw  = row.iloc[VALUE_COL] if len(row) > VALUE_COL else None
+            rate_raw = row.iloc[RATE_COL]  if len(row) > RATE_COL  else None
 
             qty     = _safe_int(qty_raw)
             revenue = _safe_float(rev_raw)
@@ -451,14 +484,13 @@ def _parse_universal_grouped(
             if qty == 0 and revenue == 0.0:
                 continue
 
-            rec = _make(
-                distributor_name, current_shop, current_shop_type,
-                sku, current_bill_no, current_bill_date,
-                qty, rate, revenue,
-            )
-            rec["city"] = "Mumbai"
-            records.append(rec)
+            pending_details.append({
+                "dist": distributor_name, "shop": current_shop, "shop_type": current_shop_type,
+                "sku": sku, "bill_no": current_bill_no, "bill_date": current_bill_date,
+                "qty": qty, "rate": rate, "_raw_rev": revenue,
+            })
 
+    _flush()  # emit the final invoice's details
     return records
 
 
