@@ -74,7 +74,8 @@ export default function ModernTradeAnalytics() {
   const [selStore, setSelStore] = useState("");
   const [selMonth, setSelMonth] = useState("");
   const [selYear,  setSelYear]  = useState("");
-  const [selSku,   setSelSku]   = useState("");
+  const [selSku,      setSelSku]      = useState("");
+  const [selCategory, setSelCategory] = useState("");
 
   const [revenueData, setRevenueData] = useState([]);
   const [qtyData,     setQtyData]     = useState([]);
@@ -82,13 +83,6 @@ export default function ModernTradeAnalytics() {
 
   const [loadingChains, setLoadingChains] = useState(true);
   const [loadingCharts, setLoadingCharts] = useState(false);
-
-  // Unified SKU list across all 3 datasets — same order = same colours
-  const allSkus = [...new Set([
-    ...revenueData.map((r) => r.sku_name),
-    ...qtyData.map((r) => r.sku_name),
-    ...sohData.map((r) => r.sku_name),
-  ])].sort();
 
   // Load chains once
   useEffect(() => {
@@ -98,33 +92,64 @@ export default function ModernTradeAnalytics() {
       .finally(() => setLoadingChains(false));
   }, []);
 
-  // Load stores / months / SKUs when chain changes
+  // Canonical SKUs from normalisation (MT tab) — [{ id, name, category, family }]
+  const [canonicalSkus, setCanonicalSkus] = useState([]);
+
+  // SKU names in selected category — used to filter chart data client-side
+  const categorySkuNames = selCategory
+    ? new Set(canonicalSkus.filter(s => s.category === selCategory).map(s => s.name))
+    : null;
+
+  // Filter chart data by category when no specific SKU is selected
+  const filteredRevenue = categorySkuNames && !selSku
+    ? revenueData.filter(r => categorySkuNames.has(r.sku_name))
+    : revenueData;
+  const filteredQty = categorySkuNames && !selSku
+    ? qtyData.filter(r => categorySkuNames.has(r.sku_name))
+    : qtyData;
+  const filteredSoh = categorySkuNames && !selSku
+    ? sohData.filter(r => categorySkuNames.has(r.sku_name))
+    : sohData;
+
+  // Unified SKU list across filtered datasets — same order = same colours
+  const allSkus = [...new Set([
+    ...filteredRevenue.map((r) => r.sku_name),
+    ...filteredQty.map((r) => r.sku_name),
+    ...filteredSoh.map((r) => r.sku_name),
+  ])].sort();
+
+  // Load stores / months / canonical SKUs when chain changes
   useEffect(() => {
     if (!selChain) {
-      setStores([]); setMonths([]); setSkus([]);
-      setSelStore(""); setSelMonth(""); setSelYear(""); setSelSku("");
+      setStores([]); setMonths([]); setSkus([]); setCanonicalSkus([]);
+      setSelStore(""); setSelMonth(""); setSelYear(""); setSelSku(""); setSelCategory("");
       return;
     }
     Promise.all([
       api(`/mt/analytics/stores${qs({ chain: selChain })}`),
       api(`/mt/analytics/months${qs({ chain: selChain })}`),
-      api(`/mt/analytics/skus${qs({ chain: selChain })}`),
+      // Change 1: use canonical SKUs instead of raw SKUs from mt_sales_records
+      fetch(`${BASE_URL}/sku/canonical?source_type=MT`).then(r => r.json()),
     ]).then(([s, m, k]) => {
-      setStores(s); setMonths(m); setSkus(k);
-      setSelStore(""); setSelMonth(""); setSelYear(""); setSelSku("");
+      setStores(s);
+      setMonths(m);
+      setCanonicalSkus(Array.isArray(k) ? k : []);
+      setSkus(Array.isArray(k) ? k : []);
+      setSelStore(""); setSelMonth(""); setSelYear(""); setSelSku(""); setSelCategory("");
     }).catch(console.error);
   }, [selChain]);
 
   // Load chart data when any filter changes
   const loadCharts = useCallback(() => {
-    // FIX: backend /mt/analytics/revenue and /qty use param "store" (not "store_code")
-    //      backend /mt/analytics/soh also uses "store" (not "store_code")
+    // If a category is selected but no specific SKU, we need to make multiple
+    // per-SKU requests and merge — OR pass no sku filter and filter client-side.
+    // We filter client-side after fetch: fetch all, then filter by category in render.
     const params = {
       chain: selChain || undefined,
-      store: selStore || undefined,   // ← was "store_code", backend expects "store"
+      store: selStore || undefined,
       month: selMonth || undefined,
       year:  selYear  || undefined,
-      sku:   selSku   || undefined,
+      sku:   selSku   || undefined,  // only set when a specific SKU is chosen
     };
     setLoadingCharts(true);
     Promise.all([
@@ -199,10 +224,23 @@ export default function ModernTradeAnalytics() {
             placeholder: "All Months",
           },
           {
+            label: "Category", value: selCategory,
+            onChange: (e) => { setSelCategory(e.target.value); setSelSku(""); },  // clearing SKU triggers loadCharts re-run via selSku dep
+            disabled: !selChain,
+            // Distinct categories from canonical SKU list
+            options: [...new Set(canonicalSkus.map(s => s.category).filter(Boolean))].sort()
+              .map((c) => ({ value: c, label: c })),
+            placeholder: "All Categories",
+          },
+          {
             label: "SKU", value: selSku,
             onChange: (e) => setSelSku(e.target.value),
             disabled: !selChain,
-            options: skus.map((s) => ({ value: s.sku_name, label: shortSku(s.sku_name) })),
+            // Change 2: filter canonical SKUs by selected category; show canonical name
+            options: (selCategory
+              ? canonicalSkus.filter(s => s.category === selCategory)
+              : canonicalSkus
+            ).map((s) => ({ value: s.name, label: shortSku(s.name) })),
             placeholder: "All SKUs",
           },
         ].map((f) => (
@@ -222,10 +260,10 @@ export default function ModernTradeAnalytics() {
           </div>
         ))}
 
-        {(selChain || selStore || selMonth || selYear || selSku) && (
+        {(selChain || selStore || selMonth || selYear || selSku || selCategory) && (
           <button
             style={styles.resetBtn}
-            onClick={() => { setSelChain(""); setSelStore(""); setSelMonth(""); setSelYear(""); setSelSku(""); }}
+            onClick={() => { setSelChain(""); setSelStore(""); setSelMonth(""); setSelYear(""); setSelSku(""); setSelCategory(""); }}
           >
             <i className="ti ti-x" style={{ fontSize: 12 }} /> Reset
           </button>
@@ -251,9 +289,9 @@ export default function ModernTradeAnalytics() {
       {/* KPIs — always show when chain selected; dims while loading */}
       {selChain && (
         <KpiStrip
-          revenueData={revenueData}
-          qtyData={qtyData}
-          sohData={sohData}
+          revenueData={filteredRevenue}
+          qtyData={filteredQty}
+          sohData={filteredSoh}
           loading={loadingCharts}
           activeStore={selStore
             ? friendlyStore(visibleStores.find(s => s.store_code === selStore) || {})
@@ -264,20 +302,20 @@ export default function ModernTradeAnalytics() {
       {/* Charts — key forces fresh mount when store filter changes */}
       <div style={styles.charts}>
         <StackedRevenueChart
-          key={`rev-${selStore}`}
-          data={revenueData}
+          key={`rev-${selStore}-${selCategory}`}
+          data={filteredRevenue}
           skuList={allSkus}
           isLoading={loadingCharts}
         />
         <StackedQtyChart
-          key={`qty-${selStore}`}
-          data={qtyData}
+          key={`qty-${selStore}-${selCategory}`}
+          data={filteredQty}
           skuList={allSkus}
           isLoading={loadingCharts}
         />
         <SohChart
-          key={`soh-${selStore}`}
-          data={sohData}
+          key={`soh-${selStore}-${selCategory}`}
+          data={filteredSoh}
           skuList={allSkus}
           isLoading={loadingCharts}
         />
