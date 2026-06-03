@@ -417,11 +417,29 @@ def _parse_universal_grouped(
 
     DATE_COL      = 0
     SHOP_COL      = 1
-    BILLNO_COL    = 3
-    QTY_COL       = 4
-    RATE_COL      = 5
-    VALUE_COL     = 6   # net value — on both header and detail rows
-    GROSS_TOT_COL = 7   # gross / MRP total — ONLY on header row
+
+    # ── Auto-detect column layout ─────────────────────────────────────────
+    # 8-col variant (with "Voucher Type" column):
+    #   Date | Particulars | Voucher Type | Voucher No. | Qty | Rate | Value | Gross Total
+    # 6-col variant (without "Voucher Type" column):
+    #   Date | Particulars | Voucher No. | Qty | Rate | Value
+    # Detected by checking the header row column count.
+    header_row = df.iloc[header_idx]
+    ncols = sum(1 for v in header_row if not _is_blank_val(v))
+    if ncols <= 6:
+        # 6-col: no Voucher Type column, no Gross Total column
+        BILLNO_COL    = 2
+        QTY_COL       = 3
+        RATE_COL      = 4
+        VALUE_COL     = 5
+        GROSS_TOT_COL = None   # not present in this variant
+    else:
+        # 8-col: original layout with Voucher Type + Gross Total
+        BILLNO_COL    = 3
+        QTY_COL       = 4
+        RATE_COL      = 5
+        VALUE_COL     = 6   # net value — on both header and detail rows
+        GROSS_TOT_COL = 7   # gross / MRP total — ONLY on header row
 
     def _flush():
         """Emit buffered detail rows, scaling each revenue to the invoice gross total."""
@@ -463,7 +481,7 @@ def _parse_universal_grouped(
             current_bill_no = _str(row.iloc[BILLNO_COL]) if len(row) > BILLNO_COL else None
             # Capture both value columns from the header row
             current_value = _safe_float(row.iloc[VALUE_COL])     if len(row) > VALUE_COL     else None
-            gross_raw     = row.iloc[GROSS_TOT_COL]              if len(row) > GROSS_TOT_COL else None
+            gross_raw     = row.iloc[GROSS_TOT_COL]              if (GROSS_TOT_COL is not None and len(row) > GROSS_TOT_COL) else None
             current_gross = _safe_float(gross_raw) if not _is_blank_val(gross_raw) else None
             continue
 
