@@ -6,6 +6,7 @@ import Settings from "./pages/Settings";
 import ModernTradeAnalytics from "./pages/ModernTradeAnalytics";
 import Projections from "./pages/Projections";
 import SkuNormalisation from "./pages/SkuNormalisation";
+import Chat from "./pages/Chat";
 import { getDistributors, getSkuCanonical } from "./services/api";
 
 const NAV = [
@@ -13,6 +14,7 @@ const NAV = [
   { key: "modern-trade",   label: "Modern Trade",          icon: "building-store" },
   { key: "projections",    label: "Projections",           icon: "chart-line" },
   { key: "normalisation",  label: "SKU Normalisation",     icon: "hierarchy" },
+  { key: "chat",           label: "Ask a Question",        icon: "message-dots" },
   { key: "upload",         label: "Upload file",           icon: "upload" },
   { key: "upload-history", label: "Upload history",        icon: "history" },
   { key: "settings",       label: "Settings",              icon: "settings" },
@@ -120,6 +122,7 @@ export default function App() {
           <UploadHistory onDistributorsChange={refreshDistributors} />
         )}
         {page === "normalisation"   && <SkuNormalisation />}
+        {page === "chat"            && <Chat />}
         {page === "settings"        && <Settings />}
       </main>
     </div>

@@ -1,6 +1,8 @@
 import os
 import uuid
 import io
+from dotenv import load_dotenv
+load_dotenv()
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
@@ -1195,3 +1197,46 @@ def delete_sku_mapping(mapping_id: str):
     sb = get_supabase()
     sb.table("sku_mappings").delete().eq("id", mapping_id).execute()
     return {"ok": True}
+
+# =============================================================================
+# CHATBOT — Text-to-SQL pipeline via Groq + Llama 3.3 70B
+# =============================================================================
+
+from chat import run_chat_pipeline
+
+
+@app.post("/chat")
+async def chat_endpoint(body: dict):
+    """
+    Body:
+      {
+        "question": "Which shop had the highest revenue last month?",
+        "context": {
+          "distributor": "SYNERGY",   // optional — current dashboard filter
+          "city":        "Ahmedabad", // optional
+          "month":       "April",     // optional
+          "year":        2026,        // optional
+          "chain":       "RELIANCE",  // optional — MT chain filter
+        }
+      }
+
+    Returns:
+      {
+        "answer": "...",   // natural language answer
+        "sql":    "...",   // SQL query executed (for debugging)
+        "error":  null     // or error message string
+      }
+    """
+    question = (body.get("question") or "").strip()
+    context  = body.get("context") or {}
+
+    if not question:
+        raise HTTPException(status_code=400, detail="question is required")
+
+    result = run_chat_pipeline(question=question, context=context)
+
+    return {
+        "answer": result["answer"],
+        "sql":    result["sql"],
+        "error":  result["error"],
+    }

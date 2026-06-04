@@ -124,3 +124,11 @@ export async function updateSkuCanonical(id, body)                       { retur
 export async function deleteSkuCanonical(id)                             { return request(`/sku/canonical/${id}`, { method: "DELETE" }); }
 export async function createSkuMapping(body)                             { return request("/sku/mappings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }); }
 export async function deleteSkuMapping(id)                               { return request(`/sku/mappings/${id}`, { method: "DELETE" }); }
+// ─── Chatbot ──────────────────────────────────────────────────────────────────
+export async function sendChatMessage(question, context = {}) {
+  return request("/chat", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ question, context }),
+  });
+}
