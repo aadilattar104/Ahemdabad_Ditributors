@@ -18,9 +18,20 @@ const SUGGESTIONS = [
 ];
 
 // ── Message bubble ────────────────────────────────────────────────────────────
-function Message({ msg }) {
+function Message({ msg, onOptionClick }) {
   const isUser = msg.role === "user";
   const [showSql, setShowSql] = useState(false);
+  const [copied, setCopied]   = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(msg.sql || "");
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // clipboard API unavailable — silently ignore
+    }
+  };
 
   return (
     <div style={{
@@ -61,15 +72,40 @@ function Message({ msg }) {
           )}
         </div>
 
-        {/* Show SQL toggle for assistant messages */}
+        {/* Clarification option buttons (Fix JSX-1 & JSX-2) */}
+        {!isUser && !msg.loading && msg.clarification_options && (
+          <div style={S.optionButtons}>
+            {msg.clarification_options.map((opt, i) => (
+              <button
+                key={i}
+                style={S.optionBtn}
+                onClick={() => onOptionClick(opt)}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* Show SQL toggle + copy button for assistant messages (Fix JSX-4) */}
         {!isUser && !msg.loading && msg.sql && (
-          <button
-            style={S.sqlToggle}
-            onClick={() => setShowSql(s => !s)}
-          >
-            <i className={`ti ti-code`} style={{ fontSize: 11 }} />
-            {showSql ? "Hide SQL" : "Show SQL"}
-          </button>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              style={S.sqlToggle}
+              onClick={() => setShowSql(s => !s)}
+            >
+              <i className="ti ti-code" style={{ fontSize: 11 }} />
+              {showSql ? "Hide SQL" : "Show SQL"}
+            </button>
+            <button
+              style={S.copyBtn}
+              onClick={handleCopy}
+              title="Copy SQL to clipboard"
+            >
+              <i className={`ti ${copied ? "ti-check" : "ti-clipboard"}`} style={{ fontSize: 11 }} />
+              {copied ? "Copied!" : "Copy"}
+            </button>
+          </div>
         )}
         {showSql && msg.sql && (
           <pre style={S.sqlBlock}>{msg.sql}</pre>
@@ -88,7 +124,14 @@ function Message({ msg }) {
 }
 
 // ── Main page ─────────────────────────────────────────────────────────────────
-export default function Chat() {
+// Props:
+//   context — active dashboard filter object from parent (city, distributor, month, year, chain).
+//             If not yet wired from parent props, pass an empty object — see TODO below.
+export default function Chat({ context }) {
+  // TODO: wire `context` from the parent dashboard state when the parent passes it down.
+  // For now, fall back to an empty object so the pipeline receives a valid (if empty) context.
+  const activeContext = context || {};
+
   const [messages,  setMessages]  = useState([
     {
       role: "assistant",
@@ -121,12 +164,36 @@ export default function Chat() {
     setMessages(prev => [...prev, { role: "assistant", content: "", loading: true, id: loadingId }]);
 
     try {
-      const result = await sendChatMessage(q, {});
-      setMessages(prev => prev.map(m =>
-        m.id === loadingId
-          ? { role: "assistant", content: result.answer, sql: result.sql, error: result.error, id: loadingId }
-          : m
-      ));
+      // Fix JSX-3: pass active context instead of hardcoded {}
+      const result = await sendChatMessage(q, activeContext);
+
+      // Fix JSX-1: handle clarification_needed response
+      if (result.clarification_needed) {
+        setMessages(prev => prev.map(m =>
+          m.id === loadingId
+            ? {
+                role: "assistant",
+                content: result.clarification_message,
+                clarification_options: result.clarification_options,
+                sql: null,
+                error: null,
+                id: loadingId,
+              }
+            : m
+        ));
+      } else {
+        setMessages(prev => prev.map(m =>
+          m.id === loadingId
+            ? {
+                role: "assistant",
+                content: result.answer,
+                sql: result.sql,
+                error: result.error,
+                id: loadingId,
+              }
+            : m
+        ));
+      }
     } catch (e) {
       setMessages(prev => prev.map(m =>
         m.id === loadingId
@@ -137,6 +204,11 @@ export default function Chat() {
       setLoading(false);
       inputRef.current?.focus();
     }
+  };
+
+  // Fix JSX-2: clicking a clarification option sends it as a new message
+  const handleOptionClick = (optionLabel) => {
+    sendMessage(optionLabel);
   };
 
   const handleKeyDown = (e) => {
@@ -182,7 +254,11 @@ export default function Chat() {
         {/* Messages */}
         <div style={S.messages}>
           {messages.map((msg, i) => (
-            <Message key={msg.id || i} msg={msg} />
+            <Message
+              key={msg.id || i}
+              msg={msg}
+              onOptionClick={handleOptionClick}
+            />
           ))}
           <div ref={bottomRef} />
         </div>
@@ -306,7 +382,35 @@ const S = {
     borderRadius: 16,
     maxWidth: "100%",
   },
+  // Clarification option buttons row
+  optionButtons: {
+    display: "flex",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 4,
+  },
+  optionBtn: {
+    padding: "5px 12px",
+    borderRadius: 16,
+    border: "0.5px solid var(--color-text-info, #378ADD)",
+    background: "transparent",
+    color: "var(--color-text-info, #378ADD)",
+    fontSize: 12,
+    cursor: "pointer",
+    transition: "background 0.1s",
+  },
   sqlToggle: {
+    alignSelf: "flex-start",
+    background: "transparent",
+    border: "none",
+    cursor: "pointer",
+    fontSize: 11,
+    color: "var(--color-text-tertiary)",
+    display: "flex", alignItems: "center", gap: 4,
+    padding: "2px 0",
+  },
+  // Copy-to-clipboard button next to Show SQL
+  copyBtn: {
     alignSelf: "flex-start",
     background: "transparent",
     border: "none",
