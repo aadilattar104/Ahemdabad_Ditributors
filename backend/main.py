@@ -266,10 +266,10 @@ def rename_distributor(body: dict):
         raise HTTPException(status_code=400, detail="Names are already the same")
 
     # 1. Update all uploads rows with this distributor name
-    sb.table("uploads").update({"distributor_name": new_name}).eq("distributor_name", old_name).execute()
+    sb.table("uploads").update({"distributor_name": new_name}).ilike("distributor_name", old_name).execute()
 
     # 2. Update all sales_records rows
-    sb.table("sales_records").update({"distributor_name": new_name}).eq("distributor_name", old_name).execute()
+    sb.table("sales_records").update({"distributor_name": new_name}).ilike("distributor_name", old_name).execute()
 
     # 3. Update distributors table — if new_name already exists, delete the old row to avoid duplicate
     existing_new = sb.table("distributors").select("id").eq("distributor_name", new_name).execute()
@@ -278,7 +278,9 @@ def rename_distributor(body: dict):
         sb.table("distributors").delete().eq("distributor_name", old_name).execute()
     else:
         # rename the distributors row itself
-        sb.table("distributors").update({"distributor_name": new_name}).eq("distributor_name", old_name).execute()
+        sb.table("distributors").update({"distributor_name": new_name}).ilike("distributor_name", old_name).execute()
+    from chat import _get_actual_distributor_names
+    _get_actual_distributor_names.cache_clear()
 
     return {"ok": True, "old_name": old_name, "new_name": new_name}
 

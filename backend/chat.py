@@ -41,6 +41,79 @@ def _get_groq_key() -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# RUNTIME DB LOOKUPS
+# ─────────────────────────────────────────────────────────────
+
+import functools
+
+@functools.lru_cache(maxsize=1)
+def _get_actual_distributor_names() -> str:
+    """
+    Fetch exact distributor_name values from DB once per process lifetime.
+    Injected into the SQL prompt so the LLM always sees real spellings.
+    Falls back to hardcoded list if DB call fails.
+    """
+    try:
+        sb = get_supabase()
+        rows = sb.table("distributors").select("distributor_name").execute().data
+        if rows:
+            # Preserve exact DB casing — this is what the LLM must use in SQL
+            names = sorted({r["distributor_name"] for r in rows if r.get("distributor_name")})
+            return ", ".join(f'"{n}"' for n in names)
+    except Exception as e:
+        print(f"[CHAT] Could not fetch distributor names: {e}")
+    return '"SYNERGY", "ICELAND", "Vidhaata", "SANGEETA", "UNIVERSAL"'  
+
+
+def _resolve_distributor_name(raw: str) -> str:
+    """
+    Resolve a user-typed distributor name to the exact DB value including exact casing.
+    e.g. "vidhata" → "Vidhaata", "SYNERGY" → "SYNERGY"
+
+    All comparisons are case-insensitive but the RETURN VALUE is the exact DB string.
+    This is critical — SQL WHERE clauses are case-sensitive in PostgreSQL by default.
+
+    Three-level resolution:
+      1. Case-insensitive exact match  → return exact DB value
+      2. Substring match               → return exact DB value
+      3. Character similarity ≥ 0.7    → return exact DB value
+    Falls back to raw.strip() if nothing matches.
+    """
+    if not raw:
+        return raw
+    raw_norm = raw.upper().strip()
+    try:
+        sb = get_supabase()
+        rows = sb.table("distributors").select("distributor_name").execute().data
+        # Keep original casing — this is what goes into the SQL WHERE clause
+        db_names = [r["distributor_name"] for r in rows if r.get("distributor_name")]
+
+        # Level 1: case-insensitive exact match
+        for n in db_names:
+            if n.upper() == raw_norm:
+                print(f"[RESOLVE exact] '{raw}' → '{n}'")
+                return n
+
+        # Level 2: substring (case-insensitive)
+        matches = [n for n in db_names if raw_norm in n.upper() or n.upper() in raw_norm]
+        if len(matches) == 1:
+            print(f"[RESOLVE substr] '{raw}' → '{matches[0]}'")
+            return matches[0]
+
+        # Level 3: character similarity
+        def similarity(a, b):
+            return sum(c in b for c in a) / max(len(a), 1)
+
+        scored = sorted(db_names, key=lambda n: similarity(raw_norm, n.upper()), reverse=True)
+        if scored and similarity(raw_norm, scored[0].upper()) > 0.7:
+            print(f"[RESOLVE fuzzy] '{raw}' → '{scored[0]}'")
+            return scored[0]
+    except Exception as e:
+        print(f"[RESOLVE] Error: {e}")
+    return raw.strip()
+
+
+# ─────────────────────────────────────────────────────────────
 # DATABASE SCHEMA CONTEXT
 # ─────────────────────────────────────────────────────────────
 
@@ -53,7 +126,7 @@ The business sells snack products (Khakhara, Namkeen) through distributors and m
 TABLE: sales_records   <-- USE THIS for distributor/secondary sales questions
   id               uuid
   upload_id        uuid
-  distributor_name text      -- e.g. "SYNERGY", "ICELAND", "VIDHATA", "SANGEETA", "UNIVERSAL"
+  distributor_name text      -- e.g. "SYNERGY", "ICELAND", "Vidhaata", "SANGEETA", "UNIVERSAL"
   shop_name        text      -- retail shop / party name e.g. "FALGUNI GRUH UDHYOG"
   shop_type        text      -- "REGULAR" or "CASH_SALE"
   sku_name         text      -- raw product name e.g. "SVASTHYA CHANA JOR 210G MRP 180/-"
@@ -116,7 +189,7 @@ TABLE: shop_margins   <-- USE THIS for margin/profitability questions
 
 TABLE: distributors   <-- USE THIS to list available distributors
   id               uuid
-  distributor_name text      -- e.g. "SYNERGY", "ICELAND", "VIDHATA"
+  distributor_name text      -- e.g. "SYNERGY", "ICELAND", "Vidhaata"
   status           text      -- "ACTIVE" or "INACTIVE"
   replaced_by      text
   created_at       timestamptz
@@ -145,7 +218,7 @@ TABLE: mt_uploads   <-- USE THIS for modern trade upload history
 === ROUTING RULES ===
 
 When the user asks about:
-- "distributors", "shops", "secondary sales", "Synergy", "Iceland", "Vidhata", "Sangeeta", "Universal"
+- "distributors", "shops", "secondary sales", "Synergy", "Iceland", "Vidhaata", "Sangeeta", "Universal"
   → USE sales_records
 
 - "modern trade", "MT", "Reliance", "Firstclub", "chain stores", "stores"
@@ -600,18 +673,26 @@ def _build_sql_prompt(question: str, context: dict):
     Structure (Fix 1 — CRITICAL RULES first):
       1. CRITICAL RULES block (fan-out prevention, LATERAL/EXISTS, NULLIF, both revenue+qty,
          month-without-year guard, shop_margins DISTINCT ON)
-      2. DB_SCHEMA block
+      2. DB_SCHEMA block (with real distributor names injected from DB)
       3. FEW_SHOT_EXAMPLES block
       4. MANDATORY FILTERS block (hard WHERE conditions from active context)
     """
     today_str = date.today().strftime('%B %d, %Y')
+
+    # Inject actual distributor names from DB so LLM never guesses spellings
+    actual_names = _get_actual_distributor_names()
+    schema = DB_SCHEMA.replace(
+        'distributor_name text      -- EXACT VALUES FROM DATABASE: {distributor_names_placeholder}',
+        f'distributor_name text      -- EXACT DB VALUES (use these exactly): {actual_names}'
+    ) if '{distributor_names_placeholder}' in DB_SCHEMA else DB_SCHEMA
 
     # Build MANDATORY FILTERS block from active context (Fix 3 — hard enforcement)
     mandatory_filters_block = ""
     if context:
         filter_lines = []
         if context.get("distributor"):
-            filter_lines.append(f"  - distributor_name = '{context['distributor'].upper()}'")
+            resolved_dist = _resolve_distributor_name(context["distributor"])
+            filter_lines.append(f"  - distributor_name = '{resolved_dist}'")
         if context.get("city"):
             filter_lines.append(f"  - city = '{context['city']}'")
         if context.get("month") and context.get("year"):
@@ -673,7 +754,7 @@ CRITICAL RULES — follow these exactly before writing any SQL:
 11. Only SELECT queries. Never INSERT, UPDATE, DELETE, DROP, TRUNCATE.
 12. Limit results to 20 rows unless asked for more.
 
-{DB_SCHEMA}
+{schema}
 
 {FEW_SHOT_EXAMPLES}
 {mandatory_filters_block}"""
@@ -803,6 +884,49 @@ def _build_answer_prompt(question: str, sql: str, rows, context: dict = None):
 
 
 # ─────────────────────────────────────────────────────────────
+# SQL DISTRIBUTOR CASING FIX
+# ─────────────────────────────────────────────────────────────
+
+def _fix_distributor_casing(sql: str) -> str:
+    """
+    After SQL is generated by the LLM, scan for any distributor_name string literals
+    and replace wrong-cased values with the exact DB casing.
+
+    Problem: LLM generates WHERE distributor_name = 'VIDHAATA' but DB has 'Vidhaata'.
+    This runs regardless of context — fixes LLM-generated SQL directly.
+
+    Strategy: find all single-quoted string values after distributor_name =
+    and replace each with the resolved exact DB value.
+    """
+    try:
+        sb = get_supabase()
+        rows = sb.table("distributors").select("distributor_name").execute().data
+        db_names = [r["distributor_name"] for r in rows if r.get("distributor_name")]
+        # Build case-insensitive lookup: upper → exact
+        db_lookup = {n.upper(): n for n in db_names}
+    except Exception as e:
+        print(f"[CASING FIX] Could not fetch distributors: {e}")
+        return sql
+
+    def replace_match(m):
+        quoted_val = m.group(1)
+        exact = db_lookup.get(quoted_val.upper())
+        if exact and exact != quoted_val:
+            print(f"[CASING FIX] '{quoted_val}' → '{exact}'")
+            return f"distributor_name = '{exact}'"
+        return m.group(0)
+
+    # Match distributor_name = 'ANY_VALUE' (with optional spaces around =)
+    fixed = re.sub(
+        r"distributor_name\s*=\s*'([^']+)'",
+        replace_match,
+        sql,
+        flags=re.IGNORECASE
+    )
+    return fixed
+
+
+# ─────────────────────────────────────────────────────────────
 # FILTER INJECTION
 # ─────────────────────────────────────────────────────────────
 
@@ -834,13 +958,15 @@ def _inject_context_filters(sql: str, context: dict) -> str:
     injections = []
 
     if is_distributor:
-        dist  = context.get("distributor", "")
+        dist_raw = context.get("distributor", "")
+        dist  = _resolve_distributor_name(dist_raw) if dist_raw else ""
         city  = context.get("city", "")
         month = context.get("month", "")
         year  = context.get("year", "")
 
-        if dist  and dist.upper() not in sql_upper:
-            injections.append(f"distributor_name = '{dist.upper()}'")
+        # Compare case-insensitively but inject exact resolved casing into SQL
+        if dist and dist.upper() not in sql_upper:
+            injections.append(f"distributor_name = '{dist}'")
         if city  and city.upper() not in sql_upper:
             injections.append(f"city = '{city}'")
         if month and month.upper() not in sql_upper:
@@ -1111,6 +1237,9 @@ def run_chat_pipeline(question: str, context: dict = None):
         sql_raw = _call_groq(_build_sql_prompt(question, context), temperature=0.0)
         sql = _validate_sql(_extract_sql(sql_raw))
         print("[SQL GENERATED]", sql)
+
+        # Fix casing: replace wrong-cased distributor names in LLM-generated SQL
+        sql = _fix_distributor_casing(sql)
 
         # Fix 5: Fan-out risk check — auto-retry with explicit warning if triggered
         if _check_fanout_risk(sql):
