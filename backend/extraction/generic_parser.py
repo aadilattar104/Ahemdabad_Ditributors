@@ -12,6 +12,12 @@ PATTERN A — Party-wise grouped (Iceland):
   shop name row: col[0] text, rest blank
   bill line: col[0]=bill_no, col[1]=date, col[2]=product_name, col[3]=qty, col[4]=rate, col[5]=amount
 
+PATTERN F — Pune grouped format:
+  header row → S.no | Date | Bill No | Vendor Name | Description | QTY | Rate | Amount
+  invoice row: col[0]=S.no (positive int), col[1]=date, col[2]=bill_no, col[3]=shop_name
+  detail row:  col[0]=None, col[3]=None, col[4]=sku, col[5]=qty, col[6]=rate, col[7]=amount
+  Revenue = Amount (col 7). City = "Pune" hardcoded.
+
 PATTERN B — Invoice register (Synergy):
   header row(s) → Sr | Date | Bill No | C/D | Party Name | ... | Qty | Rate | Amount
   invoice row: col[0]=Sr(int), col[1]=date, col[2]=bill_no, col[4]=party_name
@@ -82,6 +88,18 @@ def parse_generic(
             df, header_idx,
             party_col, sku_col, date_col, billno_col,
             qty_col, taxable_col, margin_col,
+            distributor_name,
+        )
+
+    # Detect Pattern F — Pune grouped format (MUST be before Pattern E)
+    # "Amount" in header matches MRP_AMT_KW so Pattern E false-triggers without this guard.
+    # Unique fingerprint: "Vendor Name" at col 3 AND "Description" at col 4.
+    vendor_col = _find_col(header_row, ["vendor name", "vendor"], [])
+    desc_col   = _find_col(header_row, ["description"], [])
+    if vendor_col == 3 and desc_col == 4:
+        return _parse_pune_grouped(
+            df, header_idx,
+            date_col, billno_col,
             distributor_name,
         )
 
@@ -614,6 +632,99 @@ def _parse_sangeeta_register(
         )
         rec["city"] = "Mumbai"
         records.append(rec)
+
+    return records
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATTERN F: Pune grouped format
+# S.no | Date | Bill No | Vendor Name | Description | QTY | Rate | Amount
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_pune_grouped(
+    df, header_idx,
+    date_col, billno_col,
+    distributor_name,
+):
+    """
+    Parse Pune distributor grouped format.
+
+    Structure:
+      Header: S.no | Date | Bill No | Vendor Name | Description | QTY | Rate | Amount
+      Invoice row (col0 = positive int): col1=date, col2=bill_no, col3=shop_name
+      Detail row  (col0 = blank, col3 = blank): col4=sku, col5=qty, col6=rate, col7=amount
+
+    Revenue = col7 (Amount). City = "Pune" hardcoded.
+    """
+    # Fixed column indices for this format
+    SERNO_COL  = 0
+    DATE_COL   = 1
+    BILLNO_COL = 2
+    SHOP_COL   = 3
+    SKU_COL    = 4
+    QTY_COL    = 5
+    RATE_COL   = 6
+    AMT_COL    = 7
+
+    records           = []
+    current_shop      = None
+    current_shop_type = "REGULAR"
+    current_bill_no   = None
+    current_bill_date = None
+
+    for i in range(header_idx + 1, len(df)):
+        row = df.iloc[i]
+
+        if _is_grand_total(row):
+            break
+        if _is_blank(row):
+            continue
+        if _is_subtotal(row):
+            continue
+
+        col0 = row.iloc[SERNO_COL] if len(row) > SERNO_COL else None
+
+        # ── Invoice header row: col0 is a positive integer (S.no) ─────────────────────
+        # Invoice row ALSO carries the first SKU inline in cols 4-7 — emit it.
+        if _is_pos_int(col0):
+            current_bill_date = _parse_date(row.iloc[DATE_COL])   if len(row) > DATE_COL   else None
+            current_bill_no   = _str(row.iloc[BILLNO_COL])         if len(row) > BILLNO_COL else None
+            shop_raw          = _str(row.iloc[SHOP_COL])            if len(row) > SHOP_COL   else ""
+            current_shop, current_shop_type = (
+                clean_shop_name(shop_raw) if shop_raw else ("UNKNOWN", "REGULAR")
+            )
+            sku     = _str(row.iloc[SKU_COL])     if len(row) > SKU_COL  else ""
+            qty     = _safe_int(row.iloc[QTY_COL])    if len(row) > QTY_COL  else 0
+            rate    = _safe_float(row.iloc[RATE_COL])  if len(row) > RATE_COL else None
+            revenue = _safe_float(row.iloc[AMT_COL])   if len(row) > AMT_COL  else 0.0
+            if sku and (qty != 0 or revenue != 0.0):
+                rec = _make(
+                    distributor_name, current_shop, current_shop_type,
+                    sku, current_bill_no, current_bill_date,
+                    qty, rate, revenue,
+                )
+                rec["city"] = "Pune"
+                records.append(rec)
+            continue
+
+        # ── Detail row: col0 blank AND col3 blank, col4 = SKU ─────────────────
+        col3 = row.iloc[SHOP_COL] if len(row) > SHOP_COL else None
+        if current_shop and _is_blank_val(col0) and _is_blank_val(col3):
+            sku     = _str(row.iloc[SKU_COL])    if len(row) > SKU_COL  else ""
+            qty     = _safe_int(row.iloc[QTY_COL])   if len(row) > QTY_COL  else 0
+            rate    = _safe_float(row.iloc[RATE_COL]) if len(row) > RATE_COL else None
+            revenue = _safe_float(row.iloc[AMT_COL])  if len(row) > AMT_COL  else 0.0
+
+            if not sku or (qty == 0 and revenue == 0.0):
+                continue
+
+            rec = _make(
+                distributor_name, current_shop, current_shop_type,
+                sku, current_bill_no, current_bill_date,
+                qty, rate, revenue,
+            )
+            rec["city"] = "Pune"
+            records.append(rec)
 
     return records
 
