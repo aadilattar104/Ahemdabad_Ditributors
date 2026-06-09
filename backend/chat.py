@@ -1034,42 +1034,47 @@ def _inject_context_filters(sql: str, context: dict) -> str:
 
 def _check_unmapped_skus(sql: str, rows: list) -> str | None:
     """
-    Fix 10: If sku_mappings is referenced in the SQL, run a secondary query counting
-    DISTINCT sku_name values in the relevant sales table that have no mapping.
-    Returns a warning string if unmapped SKUs exist, else None.
+    Only warn about unmapped SKUs when the SQL does NOT already filter via sku_mappings.
+    If the query uses EXISTS/sku_mappings, it is already scoped to mapped SKUs only —
+    firing a global unmapped count is misleading (unrelated SKUs trigger it).
+    Only warn for raw sku_name ILIKE queries where unmapped records could silently
+    be included in the result.
     """
     sql_upper = sql.upper()
-    if "SKU_MAPPINGS" not in sql_upper:
+
+    # If query already uses sku_mappings (EXISTS or LATERAL), it is scoped to mapped
+    # SKUs by construction — a global unmapped count would flag unrelated SKUs.
+    if "SKU_MAPPINGS" in sql_upper:
+        return None
+
+    # Only warn when the query touches sku_name WITHOUT a mapping filter,
+    # meaning unmapped raw SKUs could be silently included in aggregates.
+    if "SKU_NAME" not in sql_upper:
         return None
 
     is_mt = "MT_SALES_RECORDS" in sql_upper
     source_type = "MT" if is_mt else "DISTRIBUTOR"
     sales_table = "mt_sales_records" if is_mt else "sales_records"
 
-    unmapped_sql = f"""
-        SELECT COUNT(DISTINCT sku_name) AS unmapped_count
-        FROM {sales_table}
-        WHERE sku_name NOT IN (
-            SELECT raw_sku FROM sku_mappings WHERE source_type = '{source_type}'
-        )
-    """
+    unmapped_sql = (
+        f"SELECT COUNT(DISTINCT sku_name) AS unmapped_count "
+        f"FROM {sales_table} "
+        f"WHERE sku_name NOT IN ("
+        f"  SELECT raw_sku FROM sku_mappings WHERE source_type = '{source_type}'"
+        f")"
+    )
     try:
         sb = get_supabase()
-        result = sb.rpc("execute_sql", {"query": unmapped_sql.strip()}).execute()
+        result = sb.rpc("execute_sql", {"query": unmapped_sql}).execute()
         if result.data and result.data[0].get("unmapped_count", 0) > 0:
             count = result.data[0]["unmapped_count"]
             return (
-                f"\n\n⚠️ {count} SKU variant{'s' if count > 1 else ''} have no category mapping "
-                f"and are excluded from this total."
+                f"\n\n⚠️ {count} SKU variant{'s' if count > 1 else ''} "
+                f"in the database have no SKU mapping and may be missing from totals."
             )
     except Exception as e:
         print(f"[UNMAPPED SKU CHECK] Error: {e}")
     return None
-
-
-# ─────────────────────────────────────────────────────────────
-# EMPTY RESULT ENRICHMENT
-# ─────────────────────────────────────────────────────────────
 
 def _enrich_empty_result() -> str:
     """
@@ -1183,10 +1188,27 @@ def _resolve_product_ambiguity(question: str) -> dict:
         return {"action": "proceed_total", "question": question}
 
     # Check if a specific variant name is already in the question
+    # Match 1: full canonical name as substring e.g. 'chana jor 35g' in question
+    # Match 2: split tokens — family base + size token both present anywhere in question
+    #   handles 'chana jor units of 35g' or 'paperstories 35g chana jor'
+    import re as _re
+    _size_re = _re.compile(r'\b(\d+\s*g(?:ms?)?)\b')
     for v in variants:
-        if v["name"].lower() in q_lower:
+        vname_lower = v["name"].lower()
+        # Match 1: verbatim
+        if vname_lower in q_lower:
             enriched = question + f" (specifically for: {v['name']})"
             return {"action": "proceed_specific", "question": enriched, "variant": v["name"]}
+        # Match 2: extract size token from canonical name (e.g. '35g', '200g', '72g')
+        #   and check both the family substring AND that size token appear in question
+        size_m = _size_re.search(vname_lower)
+        if size_m:
+            size_tok = size_m.group(1).replace(' ', '')  # '35 g' → '35g'
+            # Build family base: canonical name without the size token
+            family_base = vname_lower[:size_m.start()].strip()
+            if family_base and family_base in q_lower and size_tok in q_lower.replace(' ', ''):
+                enriched = question + f" (specifically for: {v['name']})"
+                return {"action": "proceed_specific", "question": enriched, "variant": v["name"]}
 
     # Ambiguous — need clarification
     options_text = "\n".join(f"- {v['name']} ({v['category']})" for v in variants)
