@@ -8,6 +8,7 @@ import MoMTrendChart from "../components/Analytics/MoMTrendChart";
 import DistributorMoMChart from "../components/Analytics/DistributorMoMChart";
 import FilterBar from "../components/Filters/FilterBar";
 import RecurringShopsTable from "../components/RecurringShops/RecurringShopsTable";
+import ShopActivityMatrix from "../components/Analytics/ShopActivityMatrix";
 import {
   getOverview, getShops, getMoMTrend, getTopShops,
   getTopShopsByQty, getRecurringShops, getTopShopsSkuBreakdown,
@@ -107,6 +108,11 @@ export default function Dashboard({ distributors = [], onDistributorsChange }) {
         <TopShopsChart data={topRev} skuData={skuBreakdown.by_revenue} loading={loading} />
         <TopShopsByQtyChart data={topQty} skuData={skuBreakdown.by_qty} loading={loading} />
         <MoMTrendChart data={trend} loading={loading} />
+        <ShopActivityMatrix
+          distributors={distributors}
+          city={filters.city || null}
+          year={filters.year ? parseInt(filters.year, 10) : null}
+        />
         <DistributorTable rows={overview?.by_distributor || []} loading={loading} />
         <ShopTable rows={shops} loading={loading} margins={margins} onMarginsChange={() => getMargins().then(setMargins).catch(() => {})} />
         <RecurringShopsTable rows={recurring} loading={loading} />

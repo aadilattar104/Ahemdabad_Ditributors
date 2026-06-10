@@ -13,7 +13,7 @@ from extraction import run_extraction_pipeline
 from analytics.aggregator import (get_cities, get_projection,
     get_overview, get_shops, get_mom_trend, get_top_shops,
     get_top_shops_by_qty, get_skus, get_recurring_shops,
-    get_top_shops_sku_breakdown,
+    get_top_shops_sku_breakdown, get_shop_activity_matrix,
 )
 from exports.exporter import export_to_excel, export_audit_csv
 from analytics.aggregator import get_distributor_mom
@@ -1028,6 +1028,15 @@ def margins_save_one(body: dict):
 @app.get("/analytics/projection")
 def analytics_projection(distributor: str = Query(None)):
     return get_projection(distributor=distributor)
+
+
+@app.get("/shop-activity-matrix")
+def shop_activity_matrix(
+    distributor: str = Query(...),
+    city: str        = Query(None),
+    year: int        = Query(None),
+):
+    return get_shop_activity_matrix(distributor=distributor, city=city, year=year)
 
 # =============================================================================
 # PROJECTION REMARKS — global notes (sales drop, shop closed, etc.)

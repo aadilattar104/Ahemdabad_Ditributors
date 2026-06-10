@@ -561,3 +561,138 @@ def get_cities() -> list[str]:
     sb = get_supabase()
     rows = _fetch_all(sb.table("sales_records").select("city"))
     return sorted({r["city"] for r in rows if r.get("city")})
+
+
+# ---------------------------------------------------------------------------
+# Shop Activity Matrix
+# ---------------------------------------------------------------------------
+
+_MONTH_NUM = {m: i + 1 for i, m in enumerate(MONTH_ORDER)}
+
+
+def _month_key(year, month) -> tuple:
+    """Sortable (year, month_index) key."""
+    return (year or 0, _MONTH_NUM.get(month, 0))
+
+
+def _month_label(year, month) -> str:
+    return f"{month} {year}"
+
+
+def get_shop_activity_matrix(distributor: str, city: str | None = None, year: int | None = None) -> dict:
+    """
+    Build a shop × month pivot table for the given distributor.
+
+    Cell status rules:
+      ACTIVE   — revenue > 0
+      GAP      — revenue = 0 AND month is within the shop's first→last active month range
+      INACTIVE — revenue = 0 AND month is outside the shop's active range
+
+    Shop classification (priority order):
+      is_new      → True when the shop's first active month is within the last 2
+                    months of the global data range
+      Has Gaps    → is_new=False AND gap_months > 0
+      Consistent  → is_new=False AND gap_months=0 AND active_months >= 3
+      (none)      → established but sparse; appears only under "All" filter
+    """
+    sb = get_supabase()
+    query = (
+        sb.table("sales_records")
+        .select("shop_name, month, year, revenue")
+        .eq("distributor_name", distributor)
+    )
+    if city:
+        query = query.eq("city", city)
+    if year:
+        query = query.eq("year", year)
+
+    rows = _fetch_all(query)
+
+    if not rows:
+        return {"months": [], "shops": [], "data_range_months": []}
+
+    # ── Aggregate revenue per (shop, month, year) ────────────────────────────
+    cell_rev: dict[tuple, float] = {}   # (shop, year, month) → revenue
+    for r in rows:
+        shop = (r.get("shop_name") or "").strip()
+        mo   = r.get("month")
+        yr   = r.get("year")
+        rev  = r.get("revenue") or 0.0
+        if not shop or not mo or not yr:
+            continue
+        k = (shop, yr, mo)
+        cell_rev[k] = cell_rev.get(k, 0.0) + rev
+
+    # ── Build global sorted month list ───────────────────────────────────────
+    all_ym: set[tuple] = set()
+    for (shop, yr, mo) in cell_rev:
+        all_ym.add((yr, mo))
+    sorted_ym = sorted(all_ym, key=lambda x: _month_key(x[0], x[1]))
+    global_months = [_month_label(yr, mo) for yr, mo in sorted_ym]   # e.g. ["April 2026", "May 2026"]
+
+    # Last 2 months of global range define the "new shop" threshold
+    new_threshold_keys = {sorted_ym[-1], sorted_ym[-2]} if len(sorted_ym) >= 2 else {sorted_ym[-1]}
+
+    # ── Per-shop first/last active month ─────────────────────────────────────
+    shop_names = sorted({k[0] for k in cell_rev})
+    shop_active: dict[str, list[tuple]] = {s: [] for s in shop_names}
+    for (shop, yr, mo), rev in cell_rev.items():
+        if rev > 0:
+            shop_active[shop].append((yr, mo))
+
+    # ── Build shop rows ───────────────────────────────────────────────────────
+    shops_out = []
+    for shop in shop_names:
+        active_ym = shop_active[shop]
+        if not active_ym:
+            continue  # never had revenue — skip entirely
+
+        first_ym = min(active_ym, key=lambda x: _month_key(x[0], x[1]))
+        last_ym  = max(active_ym, key=lambda x: _month_key(x[0], x[1]))
+
+        cells = []
+        active_count = 0
+        gap_count    = 0
+        total_rev    = 0.0
+
+        for yr, mo in sorted_ym:
+            rev    = cell_rev.get((shop, yr, mo), 0.0)
+            mk     = _month_key(yr, mo)
+            first_k = _month_key(first_ym[0], first_ym[1])
+            last_k  = _month_key(last_ym[0],  last_ym[1])
+
+            if rev > 0:
+                status = "ACTIVE"
+                active_count += 1
+                total_rev    += rev
+            elif first_k <= mk <= last_k:
+                status = "GAP"
+                gap_count += 1
+            else:
+                status = "INACTIVE"
+
+            cells.append({
+                "month":   _month_label(yr, mo),
+                "revenue": round(rev, 2),
+                "status":  status,
+            })
+
+        is_new = first_ym in new_threshold_keys
+
+        shops_out.append({
+            "shop_name":     shop,
+            "cells":         cells,
+            "total_revenue": round(total_rev, 2),
+            "active_months": active_count,
+            "gap_months":    gap_count,
+            "is_new":        is_new,
+        })
+
+    # Sort shops by total revenue descending
+    shops_out.sort(key=lambda x: x["total_revenue"], reverse=True)
+
+    return {
+        "months":            global_months,
+        "shops":             shops_out,
+        "data_range_months": global_months,
+    }
