@@ -103,6 +103,13 @@ def parse_generic(
             distributor_name,
         )
 
+    # Detect Pattern G — MARG ERP Sales Register (Kedar Enterprise / SVS format)
+    # MUST be before Pattern E — header has "AMOUNT" which false-triggers MRP_AMT_KW.
+    # Unique fingerprint: col0="BILL NO.", col1="PARTY NAME", col2="AMOUNT" (exact positions).
+    header_texts = [str(v).strip().lower() for v in header_row if isinstance(v, str)]
+    if "bill no." in header_texts and "party name" in header_texts and "amount" in header_texts:
+        return _parse_marg_erp(df, header_idx, distributor_name)
+
     # Detect Pattern E — Sangeeta flat register (has MRP Amt column)
     mrp_amt_col = _find_col(header_row, MRP_AMT_KW, ["mrp amt", "mrp amount", "mrp", "taxable", "gst", "tax", "bill", "claim", "25%", "margin", "recd", "scheme"])
     if mrp_amt_col is not None:
@@ -798,6 +805,186 @@ def _detect_pattern(df, header_idx):
             return "GROUPED"
     return "GROUPED"
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PATTERN G: MARG ERP Sales Register (Kedar Enterprise / SVS format)
+# Header: BILL NO. | PARTY NAME | AMOUNT | DISCOUNT | NET AMT | TAX PAYABLE | DR/CR NET AMOUNT
+# Date row:    col0 = date string (e.g. "23/05/2026"), rest blank → sets current_bill_date
+# Invoice row: col0 = alphanumeric bill no (e.g. "A000716"), col1 = shop name
+# SKU row:     col0 = SKU prefix (e.g. "SVS WORLD"), col1 = SKU name + qty embedded at end
+#              col2 = AMOUNT (revenue for this SKU line)
+# Page-break rows (SUB TOTAL, repeated headers, "Continued", "Page No") are skipped.
+# City = "Mumbai" hardcoded. No margin column in this format.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_marg_erp(df, header_idx, distributor_name):
+    """
+    Parse MARG ERP 9+ Sales Register format (Kedar Enterprise / SVS distributor).
+
+    Row identification logic:
+      - Date row:    col0 is a parseable date, rest of row is blank or whitespace
+      - Invoice row: col0 is a non-date string starting with a letter+digits (e.g. "A000716"),
+                     col1 is shop name, col2 is total invoice amount (not used — we sum SKU lines)
+      - SKU row:     col0 is a non-blank string that is NOT a date and NOT an invoice no,
+                     col1 contains SKU description with qty embedded as last integer token,
+                     col2 is the SKU line amount (revenue)
+      - Skip rows:   blank, SUB TOTAL, TOTAL, page headers (repeated BILL NO. header),
+                     "Continued", "Page No", company name rows
+
+    Qty extraction: col1 text ends with a number after whitespace (e.g. "BEST CHANA JOR 200GM   7")
+    Revenue: col2 (AMOUNT column) of the SKU detail row
+    Rate: derived as revenue / qty if qty > 0, else None
+    """
+    import re
+
+    records           = []
+    current_shop      = None
+    current_shop_type = "REGULAR"
+    current_bill_no   = None
+    current_bill_date = None
+
+    # Regex to extract trailing integer qty from SKU description strings
+    # e.g. "BEST CHANA JOR 200GM                                   7" → 7
+    _QTY_RE = re.compile(r"\s+(\d+)\s*$")
+
+    # Tokens that indicate a page-break / header row to skip
+    _SKIP_TOKENS = {
+        "bill no.", "party name", "amount", "sub total", "subtotal",
+        "total", "continued", "page no", "sales statement", "company :",
+        "gstin", "phone", "e-mail", "food lic",
+    }
+
+    def _is_marg_skip_row(row):
+        """True if this row is a page-break, repeated header, or company-info row."""
+        texts = [str(v).strip().lower() for v in row if not _is_blank_val(v)]
+        if not texts:
+            return True  # blank
+        first = texts[0]
+        # Any known skip token present in first non-blank cell
+        if any(tok in first for tok in _SKIP_TOKENS):
+            return True
+        # "Continued ..2" or "Page No....2" patterns
+        if "continued" in first or "page no" in first:
+            return True
+        return False
+
+    def _is_date_row(row):
+        """col0 is a parseable date string AND the rest of the row is blank."""
+        col0 = row.iloc[0]
+        if _is_blank_val(col0):
+            return False
+        parsed = _parse_date(col0)
+        if parsed is None:
+            return False
+        # Remaining cells should be blank (date rows in MARG format have nothing else)
+        others = list(row.iloc[1:])
+        blank_count = sum(1 for v in others if _is_blank_val(v))
+        return blank_count >= max(1, len(others) * 0.8)
+
+    def _is_invoice_row(row):
+        """col0 = alphanumeric bill no (letter + digits), col1 = shop name."""
+        col0 = row.iloc[0]
+        col1 = row.iloc[1] if len(row) > 1 else None
+        if _is_blank_val(col0) or _is_blank_val(col1):
+            return False
+        col0_str = str(col0).strip()
+        # Must start with a letter and contain digits — e.g. "A000716"
+        if not re.match(r"^[A-Za-z]\d", col0_str):
+            return False
+        # col1 must be a non-numeric string (shop name)
+        col1_str = str(col1).strip()
+        if not col1_str or col1_str.lower() == "nan":
+            return False
+        try:
+            float(col1_str)
+            return False  # numeric → not a shop name
+        except ValueError:
+            pass
+        return True
+
+    def _is_sku_row(row):
+        """col0 = SKU prefix string (non-blank, non-date, non-invoice), col1 = SKU desc+qty."""
+        col0 = row.iloc[0]
+        col1 = row.iloc[1] if len(row) > 1 else None
+        if _is_blank_val(col0) or _is_blank_val(col1):
+            return False
+        col0_str = str(col0).strip()
+        # Must not be a date
+        if _parse_date(col0_str) is not None:
+            return False
+        # Must not be an invoice no (letter+digits pattern)
+        if re.match(r"^[A-Za-z]\d", col0_str):
+            return False
+        # Must not be a skip token
+        if any(tok in col0_str.lower() for tok in _SKIP_TOKENS):
+            return False
+        # col1 must be a non-blank string
+        col1_str = str(col1).strip()
+        if not col1_str or col1_str.lower() == "nan":
+            return False
+        return True
+
+    def _extract_sku_and_qty(col0_val, col1_val):
+        """
+        Build full SKU name from col0 prefix + col1 text (stripped of trailing qty).
+        Extract qty from trailing integer in col1.
+
+        e.g. col0="SVS WORLD", col1="BEST CHANA JOR 200GM                   7"
+             → sku_name="SVS WORLD BEST CHANA JOR 200GM", qty=7
+        """
+        col0_str = str(col0_val).strip()
+        col1_str = str(col1_val).strip()
+
+        qty = 0
+        m = _QTY_RE.search(col1_str)
+        if m:
+            qty = int(m.group(1))
+            col1_str = col1_str[:m.start()].strip()
+
+        sku_name = f"{col0_str} {col1_str}".strip()
+        return sku_name, qty
+
+    # ── Main parse loop ───────────────────────────────────────────────────────
+    # Start after the header row. Also need to handle page 2 which repeats headers.
+    i = header_idx + 1
+    while i < len(df):
+        row = df.iloc[i]
+        i += 1
+
+        if _is_blank(row):
+            continue
+
+        if _is_marg_skip_row(row):
+            continue
+
+        if _is_date_row(row):
+            current_bill_date = _parse_date(row.iloc[0])
+            continue
+
+        if _is_invoice_row(row):
+            current_bill_no   = str(row.iloc[0]).strip()
+            shop_raw          = str(row.iloc[1]).strip()
+            current_shop, current_shop_type = clean_shop_name(shop_raw)
+            continue
+
+        if _is_sku_row(row) and current_shop is not None:
+            sku_name, qty = _extract_sku_and_qty(row.iloc[0], row.iloc[1])
+            revenue = _safe_float(row.iloc[2]) if len(row) > 2 else 0.0
+            rate    = round(revenue / qty, 2) if qty > 0 else None
+
+            if not sku_name or (qty == 0 and revenue == 0.0):
+                continue
+
+            rec = _make(
+                distributor_name, current_shop, current_shop_type,
+                sku_name, current_bill_no, current_bill_date,
+                qty, rate, revenue,
+            )
+            rec["city"] = "Mumbai"
+            records.append(rec)
+
+    return records
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Row / value helpers

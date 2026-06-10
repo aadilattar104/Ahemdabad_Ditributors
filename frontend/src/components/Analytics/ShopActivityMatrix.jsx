@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
@@ -57,6 +57,114 @@ function classifyShop(shop) {
   if (shop.active_months >= 3)  return "Consistent";
   return null; // All only
 }
+
+// ── PDF export via print window ───────────────────────────────────────────────
+function exportToPdf(distributor, filter, months, visibleShops) {
+  const statusColor = {
+    ACTIVE:   { bg: "#dcfce7", text: "#166534", border: "#bbf7d0" },
+    GAP:      { bg: "#fee2e2", text: "#991b1b", border: "#fecaca" },
+    INACTIVE: { bg: "transparent", text: "#9ca3af", border: "transparent" },
+  };
+
+  const fmt = (n) => n ? "₹" + Math.round(n).toLocaleString("en-IN") : "—";
+
+  const classifyShop = (shop) => {
+    if (shop.is_new)             return "New";
+    if (shop.gap_months > 0)     return "Has Gaps";
+    if (shop.active_months >= 3) return "Consistent";
+    return null;
+  };
+
+  const headerCells = months.map(m =>
+    `<th>${m.replace(" ", "<br/>")}</th>`
+  ).join("");
+
+  const rows = visibleShops.map(shop => {
+    const cls = classifyShop(shop);
+    const cellMap = {};
+    (shop.cells || []).forEach(c => { cellMap[c.month] = c; });
+
+    const dataCells = months.map(m => {
+      const cell   = cellMap[m];
+      const status = cell?.status || "INACTIVE";
+      const sc     = statusColor[status];
+      const label  = status === "ACTIVE" ? fmt(cell?.revenue)
+                   : status === "GAP"    ? "GAP"
+                   : "—";
+      return `<td style="background:${sc.bg};color:${sc.text};border:0.5px solid ${sc.border};text-align:center;padding:4px 6px;font-size:11px;">${label}</td>`;
+    }).join("");
+
+    const clsBadge = cls ? `<span style="font-size:10px;padding:1px 6px;border-radius:4px;font-weight:500;
+      background:${cls==="Has Gaps"?"#fee2e2":cls==="Consistent"?"#dcfce7":"#f3f4f6"};
+      color:${cls==="Has Gaps"?"#991b1b":cls==="Consistent"?"#166534":"#6b7280"};">${cls}</span>` : "—";
+
+    return `<tr>
+      <td style="font-size:11px;padding:5px 8px;font-weight:500;white-space:nowrap;">${shop.shop_name}</td>
+      ${dataCells}
+      <td style="text-align:right;font-size:11px;padding:5px 8px;font-weight:600;">${fmt(shop.total_revenue)}</td>
+      <td style="text-align:center;font-size:11px;padding:5px 8px;color:#166534;font-weight:600;">${shop.active_months}</td>
+      <td style="text-align:center;font-size:11px;padding:5px 8px;color:${shop.gap_months>0?"#991b1b":"#9ca3af"};font-weight:${shop.gap_months>0?600:400};">${shop.gap_months}</td>
+      <td style="text-align:center;padding:5px 8px;">${clsBadge}</td>
+    </tr>`;
+  }).join("");
+
+  const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>Shop Activity Matrix — ${distributor}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 12px; color: #111; padding: 16px; }
+    h2 { font-size: 15px; font-weight: 600; margin-bottom: 2px; }
+    .meta { font-size: 11px; color: #6b7280; margin-bottom: 10px; }
+    table { width: 100%; border-collapse: collapse; table-layout: auto; }
+    th { background: #f9fafb; font-size: 10px; font-weight: 600; color: #374151;
+         padding: 5px 6px; border-bottom: 1px solid #e5e7eb; text-align: center;
+         white-space: nowrap; }
+    th.shop-col { text-align: left; padding-left: 8px; }
+    td { border-bottom: 0.5px solid #f3f4f6; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    .legend { display: flex; gap: 14px; margin-bottom: 8px; }
+    .legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: #374151; }
+    .dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+    @media print {
+      body { padding: 8px; }
+      @page { size: landscape; margin: 10mm; }
+    }
+  </style>
+</head>
+<body>
+  <h2>Shop Activity Matrix — ${distributor}</h2>
+  <p class="meta">Filter: ${filter} &nbsp;·&nbsp; ${visibleShops.length} shops &nbsp;·&nbsp; ${months.length} months &nbsp;·&nbsp; Generated ${new Date().toLocaleDateString("en-IN")}</p>
+  <div class="legend">
+    <div class="legend-item"><span class="dot" style="background:#dcfce7;border:1px solid #bbf7d0;"></span> Active</div>
+    <div class="legend-item"><span class="dot" style="background:#fee2e2;border:1px solid #fecaca;"></span> Gap</div>
+    <div class="legend-item"><span class="dot" style="background:#e5e7eb;border:1px solid #d1d5db;"></span> Inactive</div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th class="shop-col">Shop</th>
+        ${headerCells}
+        <th>Total Revenue</th>
+        <th>Active</th>
+        <th>Gaps</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>${rows}</tbody>
+  </table>
+</body>
+</html>`;
+
+  const win = window.open("", "_blank", "width=1100,height=700");
+  win.document.write(html);
+  win.document.close();
+  win.focus();
+  setTimeout(() => { win.print(); }, 400);
+}
+
 
 // ── Skeleton loader ───────────────────────────────────────────────────────────
 function Skeleton() {
@@ -121,7 +229,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
           )}
         </div>
 
-        {/* Legend — only when expanded and has data */}
+        {/* Legend + PDF button — only when expanded and has data */}
         {expanded && data && (
           <div style={{ display: "flex", alignItems: "center", gap: 16 }} onClick={e => e.stopPropagation()}>
             {[
@@ -139,6 +247,27 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                 {label}
               </div>
             ))}
+
+            {/* PDF export button */}
+            <button
+              onClick={e => {
+                e.stopPropagation();
+                exportToPdf(distributor, filter, months, visibleShops);
+              }}
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                fontSize: 12, padding: "4px 10px",
+                borderRadius: "var(--border-radius-md)",
+                border: "0.5px solid var(--color-border-secondary)",
+                background: "transparent",
+                color: "var(--color-text-secondary)",
+                cursor: "pointer",
+              }}
+              title="Export to PDF"
+            >
+              <i className="ti ti-file-type-pdf" style={{ fontSize: 13 }} aria-hidden />
+              PDF
+            </button>
           </div>
         )}
       </div>
