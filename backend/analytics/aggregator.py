@@ -361,7 +361,7 @@ def get_distributor_mom(distributor=None, sku=None, month=None, year=None, city=
     aliases, reverse = _load_sku_maps("DISTRIBUTOR")   # load ONCE
     cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
-    query = sb.table("sales_records").select("distributor_name, month, year, qty, revenue")
+    query = sb.table("sales_records").select("distributor_name, shop_name, month, year, qty, revenue")
     if distributor: query = query.eq("distributor_name", distributor)
     if month:       query = query.eq("month", month)
     if year:        query = query.eq("year", year)
@@ -379,13 +379,17 @@ def get_distributor_mom(distributor=None, sku=None, month=None, year=None, city=
                 "year":    r["year"],
                 "revenue": 0.0,
                 "qty":     0,
+                "shops":   set(),
             }
         agg[key]["revenue"] += r["revenue"]
         agg[key]["qty"]     += r["qty"]
+        if r.get("shop_name"):
+            agg[key]["shops"].add(r["shop_name"].upper().strip())
 
     result = list(agg.values())
     for r in result:
-        r["revenue"] = round(r["revenue"], 2)
+        r["revenue"]    = round(r["revenue"], 2)
+        r["shop_count"] = len(r.pop("shops"))
     return sorted(result, key=lambda x: (x["year"] or 0, _month_order(x["month"]), x["distributor_name"]))
 
 

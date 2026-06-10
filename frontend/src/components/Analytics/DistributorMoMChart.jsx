@@ -52,6 +52,7 @@ function CustomTooltip({ active, payload, label }) {
             <div style={{ paddingLeft: 14, color: "var(--color-text-secondary)", display: "flex", flexDirection: "column", gap: 1 }}>
               <span>Revenue: <strong style={{ color: "var(--color-text-primary)" }}>{fmtRev(p.value)}</strong></span>
               <span>Qty sold: <strong style={{ color: "var(--color-text-primary)" }}>{qty.toLocaleString()} units</strong></span>
+              <span>Shops served: <strong style={{ color: "var(--color-text-primary)" }}>{(p.payload[distName + "__shops"] ?? 0).toLocaleString()}</strong></span>
             </div>
           </div>
         );
@@ -107,8 +108,9 @@ export default function DistributorMoMChart({ data = [], loading = false }) {
     const label = `${r.month?.slice(0, 3)} ${String(r.year).slice(2)}`;
     const sortKey = (r.year ?? 0) * 100 + (MONTH_ORDER.indexOf(r.month) + 1);
     if (!pivotMap[label]) pivotMap[label] = { label, _sort: sortKey };
-    pivotMap[label][`${r.distributor_name}__rev`] = (pivotMap[label][`${r.distributor_name}__rev`] || 0) + r.revenue;
-    pivotMap[label][`${r.distributor_name}__qty`] = (pivotMap[label][`${r.distributor_name}__qty`] || 0) + r.qty;
+    pivotMap[label][`${r.distributor_name}__rev`]   = (pivotMap[label][`${r.distributor_name}__rev`] || 0) + r.revenue;
+    pivotMap[label][`${r.distributor_name}__qty`]   = (pivotMap[label][`${r.distributor_name}__qty`] || 0) + r.qty;
+    pivotMap[label][`${r.distributor_name}__shops`] = (pivotMap[label][`${r.distributor_name}__shops`] || 0) + (r.shop_count || 0);
   });
 
   const chartData = Object.values(pivotMap).sort((a, b) => a._sort - b._sort);
