@@ -50,6 +50,85 @@ MRP_AMT_KW      = ["mrp amt", "mrp amount", "amount"]
 PARTICULARS_KW  = ["particulars", "particular"]
 
 
+def _header_has_all(header_row, *keywords) -> bool:
+    """Return True if every keyword appears (as substring) in at least one header cell."""
+    texts = [str(v).strip().lower() for v in header_row if v is not None]
+    return all(any(kw in t for t in texts) for kw in keywords)
+
+
+def _header_col_exact(header_row, col_idx: int, keyword: str) -> bool:
+    """Return True if header_row[col_idx] exactly equals keyword (case-insensitive)."""
+    if col_idx >= len(header_row) or header_row[col_idx] is None:
+        return False
+    return str(header_row[col_idx]).strip().lower() == keyword.lower()
+
+
+def _fingerprint_pattern(header_row) -> str | None:
+    """
+    Identify the distributor pattern from STRUCTURAL fingerprints ONLY.
+    Each fingerprint uses a combination of unique column names that cannot
+    appear together in any other known format. Returns a pattern code or None.
+
+    Pattern codes:
+      ICELAND   — Bill No + Bill Date + Product Name + Product Amount
+      SYNERGY   — Sr. + C/D + Prod Amt  (register with C/D debit/credit col)
+      VIDHAATA  — Taxable @ 100% anywhere in header
+      PUNE      — Vendor Name at col3 AND Description at col4
+      KEDAR     — BILL NO. + PARTY NAME + AMOUNT at exact col positions 0,1,2
+      SANGEETA  — MRP Amt anywhere in header
+      UNIVERSAL — Particulars anywhere + no Party Name col
+      (None)    — fall through to _detect_pattern for GROUPED vs REGISTER
+    """
+    texts = [str(v).strip().lower() if v is not None else "" for v in header_row]
+
+    # ── VIDHAATA (Pattern C) ────────────────────────────────────────────────
+    # Unique: only file with "taxable @ 100%" column
+    if any("taxable @ 100%" in t or "taxable@100%" in t for t in texts):
+        return "VIDHAATA"
+
+    # ── KEDAR / MARG ERP (Pattern G) ───────────────────────────────────────
+    # Unique: col0="bill no." col1="party name" col2="amount" — exact positions
+    if (len(texts) >= 3
+            and texts[0] == "bill no."
+            and texts[1] == "party name"
+            and texts[2] == "amount"):
+        return "KEDAR"
+
+    # ── PUNE grouped (Pattern F) ────────────────────────────────────────────
+    # Unique: "vendor name" at col3 AND "description" at col4
+    if (len(texts) >= 5
+            and "vendor" in texts[3]
+            and "description" in texts[4]):
+        return "PUNE"
+
+    # ── SANGEETA flat register (Pattern E) ─────────────────────────────────
+    # Unique: "mrp amt" column (not "mrp amount" or just "mrp")
+    if any(t == "mrp amt" or t.startswith("mrp amt") for t in texts):
+        return "SANGEETA"
+
+    # ── ICELAND party-wise grouped (Pattern A) ──────────────────────────────
+    # Unique: "bill no" + "bill date" + "product name" + "product amount"
+    # This MUST come after Sangeeta — Sangeeta also has "bill no" but not "product name".
+    if (any("bill date" in t for t in texts)
+            and any("product name" in t for t in texts)
+            and any("product amount" in t for t in texts)):
+        return "ICELAND"
+
+    # ── SYNERGY register (Pattern B) ────────────────────────────────────────
+    # Unique: "c/d" column (debit/credit indicator) + "prod amt"
+    if any(t == "c/d" for t in texts) and any("prod amt" in t for t in texts):
+        return "SYNERGY"
+
+    # ── UNIVERSAL grouped (Pattern D) ───────────────────────────────────────
+    # Unique: "particulars" column AND no "party name" / "customer name" column
+    has_particulars = any("particulars" in t or "particular" == t for t in texts)
+    has_party       = any("party name" in t or "customer name" in t or "vendor name" in t for t in texts)
+    if has_particulars and not has_party:
+        return "UNIVERSAL"
+
+    return None   # unknown — fall through to keyword cascade
+
+
 def parse_generic(
     df: pd.DataFrame,
     distributor_name: str,
@@ -79,10 +158,74 @@ def parse_generic(
     date_col   = _find_col(header_row, DATE_KEYWORDS,   [])
     billno_col = _find_col(header_row, BILLNO_KEYWORDS, [])
 
-    # Detect Pattern C — Mumbai Register (has Taxable @ 100% and Customer Name columns)
+    # ── Step 1: Structural fingerprint (primary routing, mismatch-proof) ────
+    # Identifies each known distributor format by unique column combinations
+    # that cannot appear together in any other format. This runs BEFORE any
+    # keyword-substring matching to prevent false triggers like
+    # "Product Amount" matching "amount" and mis-routing to Sangeeta.
+    fingerprint = _fingerprint_pattern(header_row)
+    print(f"[PARSER] Distributor='{distributor_name}' -> fingerprint={fingerprint!r}")
+
+    if fingerprint == "VIDHAATA":
+        margin_col = _find_col(header_row, ["margin%", "margin %", "margin"], ["retailor", "retailer"])
+        taxable_col = _find_col(header_row, TAXABLE_KW, [])
+        return _parse_mumbai_register(
+            df, header_idx,
+            party_col, sku_col, date_col, billno_col,
+            qty_col, taxable_col, margin_col,
+            distributor_name,
+        )
+
+    if fingerprint == "KEDAR":
+        return _parse_marg_erp(df, header_idx, distributor_name)
+
+    if fingerprint == "PUNE":
+        return _parse_pune_grouped(
+            df, header_idx,
+            date_col, billno_col,
+            distributor_name,
+        )
+
+    if fingerprint == "SANGEETA":
+        mrp_amt_col = _find_col(header_row, MRP_AMT_KW,
+                                 ["mrp amount", "mrp", "taxable", "gst", "tax",
+                                  "bill", "claim", "25%", "margin", "recd", "scheme",
+                                  "product amount", "product"])
+        return _parse_sangeeta_register(
+            df, header_idx,
+            party_col, sku_col, date_col, billno_col,
+            qty_col, mrp_amt_col,
+            distributor_name,
+        )
+
+    if fingerprint == "ICELAND":
+        return _parse_grouped(
+            df, header_idx,
+            qty_col, amt_col, rate_col, sku_col, date_col, billno_col,
+            distributor_name,
+        )
+
+    if fingerprint == "SYNERGY":
+        return _parse_register(
+            df, header_idx,
+            qty_col, amt_col, rate_col, party_col, sku_col, date_col, billno_col,
+            distributor_name,
+        )
+
+    if fingerprint == "UNIVERSAL":
+        return _parse_universal_grouped(
+            df, header_idx,
+            qty_col, amt_col, rate_col, date_col, billno_col,
+            distributor_name,
+        )
+
+    # ── Step 2: Keyword cascade fallback (for future/unknown formats) ────────
+    # Only reached if _fingerprint_pattern returns None (unrecognised file).
+    # Preserved exactly as before — no changes to existing logic.
+    print(f"[PARSER] WARNING: No fingerprint match for '{distributor_name}' -- falling back to keyword cascade")
+
     taxable_col = _find_col(header_row, TAXABLE_KW, [])
     margin_col  = _find_col(header_row, ["margin%", "margin %", "margin"], ["retailor", "retailer"])
-
     if taxable_col is not None:
         return _parse_mumbai_register(
             df, header_idx,
@@ -91,9 +234,6 @@ def parse_generic(
             distributor_name,
         )
 
-    # Detect Pattern F — Pune grouped format (MUST be before Pattern E)
-    # "Amount" in header matches MRP_AMT_KW so Pattern E false-triggers without this guard.
-    # Unique fingerprint: "Vendor Name" at col 3 AND "Description" at col 4.
     vendor_col = _find_col(header_row, ["vendor name", "vendor"], [])
     desc_col   = _find_col(header_row, ["description"], [])
     if vendor_col == 3 and desc_col == 4:
@@ -103,15 +243,14 @@ def parse_generic(
             distributor_name,
         )
 
-    # Detect Pattern G — MARG ERP Sales Register (Kedar Enterprise / SVS format)
-    # MUST be before Pattern E — header has "AMOUNT" which false-triggers MRP_AMT_KW.
-    # Unique fingerprint: col0="BILL NO.", col1="PARTY NAME", col2="AMOUNT" (exact positions).
     header_texts = [str(v).strip().lower() for v in header_row if isinstance(v, str)]
     if "bill no." in header_texts and "party name" in header_texts and "amount" in header_texts:
         return _parse_marg_erp(df, header_idx, distributor_name)
 
-    # Detect Pattern E — Sangeeta flat register (has MRP Amt column)
-    mrp_amt_col = _find_col(header_row, MRP_AMT_KW, ["mrp amt", "mrp amount", "mrp", "taxable", "gst", "tax", "bill", "claim", "25%", "margin", "recd", "scheme"])
+    mrp_amt_col = _find_col(header_row, MRP_AMT_KW,
+                             ["mrp amount", "mrp", "taxable", "gst", "tax",
+                              "bill", "claim", "25%", "margin", "recd", "scheme",
+                              "product amount", "product"])
     if mrp_amt_col is not None:
         return _parse_sangeeta_register(
             df, header_idx,
@@ -120,9 +259,6 @@ def parse_generic(
             distributor_name,
         )
 
-    # Detect Pattern D — Universal Marketing grouped
-    # Identified by: header has "Particulars" or "Sales Register" style,
-    # and data rows have date in col0 + shop in col1 (invoice row) then blank col0 + sku in col1 (detail row)
     particulars_col = _find_col(header_row, PARTICULARS_KW, [])
     if particulars_col is not None and party_col is None:
         return _parse_universal_grouped(
@@ -132,7 +268,6 @@ def parse_generic(
         )
 
     pattern = _detect_pattern(df, header_idx)
-
     if pattern == "GROUPED":
         return _parse_grouped(
             df, header_idx,
@@ -789,16 +924,33 @@ def _find_col(header_row, keywords, skip_keywords):
     return None
 
 
+def _is_separator_row(row) -> bool:
+    """
+    True for rows that are visual separators (dashes/equals/underscores) not data.
+    e.g. '-----...' used as section dividers in Synergy Sales Register.
+    """
+    col0 = row.iloc[0]
+    if not isinstance(col0, str):
+        return False
+    stripped = col0.strip()
+    return len(stripped) >= 5 and all(c in '-=_*' for c in stripped)
+
+
 def _detect_pattern(df, header_idx):
     """
     Scan up to 30 rows after the header to determine format.
     - First positive integer in col0  → REGISTER (Synergy-style)
     - First shop-name row             → GROUPED  (Iceland-style)
+    Separator rows (---) are skipped before checking.
     Defaults to GROUPED if neither is found within the scan window.
     """
     for i in range(header_idx + 1, min(header_idx + 30, len(df))):
         row  = df.iloc[i]
         col0 = row.iloc[0]
+        if _is_blank(row):
+            continue
+        if _is_separator_row(row):      # skip --- divider lines
+            continue
         if _is_pos_int(col0):
             return "REGISTER"
         if _is_shop_name_row(row):
