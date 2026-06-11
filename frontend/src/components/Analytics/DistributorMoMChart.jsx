@@ -61,12 +61,32 @@ function CustomTooltip({ active, payload, label }) {
   );
 }
 
-function DataLabel({ x, y, width, value }) {
+function DataLabel({ x, y, width, value, vertical }) {
   if (!value) return null;
+  const cx = x + width / 2;
+  if (vertical) {
+    // Rotated label — grows upward from 4px above bar top
+    const pivotY = y - 4;
+    return (
+      <text
+        x={cx}
+        y={pivotY}
+        textAnchor="start"
+        dominantBaseline="central"
+        fontSize={11}
+        fontWeight={600}
+        fill="var(--color-text-secondary)"
+        transform={`rotate(-90, ${cx}, ${pivotY})`}
+      >
+        {fmtRev(value)}
+      </text>
+    );
+  }
+  // Horizontal — single line, 6px gap above bar
   return (
     <text
-      x={x + width / 2}
-      y={y - 4}
+      x={cx}
+      y={y - 6}
       textAnchor="middle"
       fontSize={11}
       fontWeight={600}
@@ -77,7 +97,7 @@ function DataLabel({ x, y, width, value }) {
   );
 }
 
-export default function DistributorMoMChart({ data = [], loading = false }) {
+export default function DistributorMoMChart({ data = [], loading = false, selectedDistributor = null }) {
   if (loading) {
     return (
       <div style={cardStyle}>
@@ -131,7 +151,7 @@ export default function DistributorMoMChart({ data = [], loading = false }) {
       </div>
 
       <ResponsiveContainer width="100%" height={320}>
-        <BarChart data={chartData} margin={{ top: 24, right: 12, left: 0, bottom: 8 }} barCategoryGap="25%" barGap={4}>
+        <BarChart data={chartData} margin={{ top: selectedDistributor ? 28 : 64, right: 12, left: 0, bottom: 8 }} barCategoryGap="25%" barGap={4}>
           <CartesianGrid vertical={false} stroke="var(--color-border-tertiary)" strokeDasharray="4 4" />
           <XAxis
             dataKey="label"
@@ -157,7 +177,7 @@ export default function DistributorMoMChart({ data = [], loading = false }) {
               radius={[4, 4, 0, 0]}
               barSize={28}
             >
-              <LabelList dataKey={`${dist}__rev`} content={<DataLabel />} />
+              <LabelList dataKey={`${dist}__rev`} content={(props) => <DataLabel {...props} vertical={!selectedDistributor} />} />
             </Bar>
           ))}
         </BarChart>

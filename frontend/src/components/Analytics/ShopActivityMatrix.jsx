@@ -2,10 +2,11 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
-async function fetchMatrix(distributor, city, year) {
+async function fetchMatrix(distributor, city, year, category) {
   const params = new URLSearchParams({ distributor });
-  if (city) params.set("city", city);
-  if (year) params.set("year", year);
+  if (city)     params.set("city", city);
+  if (year)     params.set("year", year);
+  if (category) params.set("category", category);
   const res = await fetch(`${BASE_URL}/shop-activity-matrix?${params}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
@@ -52,10 +53,11 @@ const STATUS = {
 const FILTERS = ["All", "Has Gaps", "Consistent", "New"];
 
 function classifyShop(shop) {
-  if (shop.is_new)              return "New";
-  if (shop.gap_months > 0)      return "Has Gaps";
-  if (shop.active_months >= 3)  return "Consistent";
-  return null; // All only
+  if (shop.is_new)                                           return "New";
+  if (shop.gap_months > 0)                                   return "Has Gaps";
+  if (!shop.is_lapsed && shop.active_months >= 3)            return "Consistent";
+  // Lapsed shops (stopped ordering) fall under All only — not Consistent
+  return null;
 }
 
 // ── PDF export via print window ───────────────────────────────────────────────
@@ -69,9 +71,9 @@ function exportToPdf(distributor, filter, months, visibleShops) {
   const fmt = (n) => n ? "₹" + Math.round(n).toLocaleString("en-IN") : "—";
 
   const classifyShop = (shop) => {
-    if (shop.is_new)             return "New";
-    if (shop.gap_months > 0)     return "Has Gaps";
-    if (shop.active_months >= 3) return "Consistent";
+    if (shop.is_new)                                    return "New";
+    if (shop.gap_months > 0)                            return "Has Gaps";
+    if (!shop.is_lapsed && shop.active_months >= 3)     return "Consistent";
     return null;
   };
 
@@ -185,15 +187,16 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
   const [hovered,      setHovered]      = useState(null);
   const [expanded,     setExpanded]     = useState(false);  // collapsed by default
   const [distributor,  setDistributor]  = useState("");     // own internal selection
+  const [category,     setCategory]     = useState("");     // "Namkeen" | "Khakhara" | ""
 
   useEffect(() => {
     if (!distributor) { setData(null); return; }
     setLoading(true); setError("");
-    fetchMatrix(distributor, city, year)
+    fetchMatrix(distributor, city, year, category)
       .then(setData)
       .catch(e => setError(e.message || "Failed to load matrix"))
       .finally(() => setLoading(false));
-  }, [distributor, city, year]);
+  }, [distributor, city, year, category]);
 
   // Sort months defensively
   const months = data ? [...data.months].sort((a, b) => monthSortKey(a) - monthSortKey(b)) : [];
@@ -206,6 +209,22 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
       })
     : [];
 
+  // ── Monthly summary row — computed from visibleShops ──────────────────────
+  // For each month: total revenue across active shops + count of shops served
+  const monthlySummary = months.reduce((acc, m) => {
+    let revenue = 0;
+    let shopsServed = 0;
+    visibleShops.forEach(shop => {
+      const cell = (shop.cells || []).find(c => c.month === m);
+      if (cell && cell.status === "ACTIVE") {
+        revenue    += cell.revenue || 0;
+        shopsServed += 1;
+      }
+    });
+    acc[m] = { revenue, shopsServed };
+    return acc;
+  }, {});
+
   // Badge counts
   const counts = data
     ? FILTERS.reduce((acc, f) => {
@@ -215,6 +234,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
         return acc;
       }, {})
     : {};
+
 
   return (
     <div style={S.card}>
@@ -281,7 +301,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
             </label>
             <select
               value={distributor}
-              onChange={e => { setDistributor(e.target.value); setFilter("All"); setData(null); }}
+              onChange={e => { setDistributor(e.target.value); setFilter("All"); setCategory(""); setData(null); }}
               style={S.select}
             >
               <option value="">Select distributor…</option>
@@ -298,9 +318,34 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
             )}
           </div>
 
+          {/* ── Category filter ─────────────────────────────────────────── */}
+          {distributor && (
+            <div style={{ padding: "8px 18px", borderBottom: "0.5px solid var(--color-border-tertiary)", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Category</span>
+              {["", "Namkeen", "Khakhara"].map(cat => (
+                <button
+                  key={cat || "all"}
+                  onClick={() => { setCategory(cat); setData(null); }}
+                  style={{
+                    fontSize: 12, padding: "3px 12px",
+                    borderRadius: "var(--border-radius-md)",
+                    border: "0.5px solid var(--color-border-secondary)",
+                    background: category === cat ? "var(--color-background-secondary)" : "transparent",
+                    color: category === cat ? "var(--color-text-primary)" : "var(--color-text-secondary)",
+                    fontWeight: category === cat ? 500 : 400,
+                    cursor: "pointer",
+                  }}
+                >
+                  {cat || "All"}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* ── Filter bar — only when data loaded ──────────────────────── */}
           {data && (
             <div style={S.filterRow}>
+              <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em", marginRight: 2 }}>Subcategory</span>
               {FILTERS.map(f => (
                 <button
                   key={f}
@@ -315,6 +360,11 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                       color:      filter === f ? "#fff" : "var(--color-text-secondary)",
                     }}>
                       {counts[f]}
+                    </span>
+                  )}
+                  {f !== "New" && (
+                    <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginLeft: 2 }}>
+                      Namkeen · Khakhara
                     </span>
                   )}
                 </button>
@@ -375,6 +425,37 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                   </tr>
                 </thead>
 
+                {/* ── Monthly summary row — shops served + revenue per month ── */}
+                {visibleShops.length > 0 && (
+                  <tbody>
+                    <tr style={{ background: "var(--color-background-secondary)", borderBottom: "1.5px solid var(--color-border-secondary)" }}>
+                      <td style={{ ...S.td, ...S.stickyCol, fontWeight: 600, fontSize: 12, color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>
+                        Monthly Summary
+                      </td>
+                      {months.map(m => {
+                        const ms = monthlySummary[m] || { revenue: 0, shopsServed: 0 };
+                        return (
+                          <td key={m} style={{ ...S.td, textAlign: "center", padding: "6px 4px" }}>
+                            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+                              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-primary)" }}>
+                                {ms.revenue > 0 ? fmt(ms.revenue) : "—"}
+                              </span>
+                              <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+                                {ms.shopsServed > 0 ? `${ms.shopsServed} shop${ms.shopsServed !== 1 ? "s" : ""}` : "—"}
+                              </span>
+                            </div>
+                          </td>
+                        );
+                      })}
+                      {/* Empty summary cols to match header */}
+                      <td style={{ ...S.td, textAlign: "right", fontSize: 12, fontWeight: 600, paddingRight: 14, color: "var(--color-text-primary)" }}>
+                        {fmt(visibleShops.reduce((s, sh) => s + (sh.total_revenue || 0), 0))}
+                      </td>
+                      <td colSpan={3} />
+                    </tr>
+                  </tbody>
+                )}
+
                 <tbody>
                   {visibleShops.map((shop, si) => {
                     const cls = classifyShop(shop);
@@ -393,10 +474,17 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                             : "var(--color-background-secondary)",
                         }}
                       >
-                        {/* Shop name */}
+                        {/* Shop name with serial number */}
                         <td style={{ ...S.td, ...S.stickyCol, fontWeight: 500, fontSize: 13 }}
                             title={shop.shop_name}>
                           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            {/* Serial number */}
+                            <span style={{
+                              fontSize: 11, fontWeight: 600, color: "var(--color-text-tertiary)",
+                              minWidth: 20, flexShrink: 0, textAlign: "right",
+                            }}>
+                              {si + 1}.
+                            </span>
                             {/* Tiny classification dot */}
                             {cls && (
                               <span style={{
@@ -409,7 +497,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                             )}
                             <span style={{
                               overflow: "hidden", textOverflow: "ellipsis",
-                              whiteSpace: "nowrap", maxWidth: 160,
+                              whiteSpace: "nowrap", maxWidth: 148,
                               display: "block",
                             }}>
                               {shop.shop_name}

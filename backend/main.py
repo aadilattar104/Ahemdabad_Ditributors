@@ -1035,8 +1035,9 @@ def shop_activity_matrix(
     distributor: str = Query(...),
     city: str        = Query(None),
     year: int        = Query(None),
+    category: str    = Query(None),
 ):
-    return get_shop_activity_matrix(distributor=distributor, city=city, year=year)
+    return get_shop_activity_matrix(distributor=distributor, city=city, year=year, category=category)
 
 # =============================================================================
 # PROJECTION REMARKS — global notes (sales drop, shop closed, etc.)

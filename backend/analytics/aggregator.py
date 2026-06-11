@@ -583,7 +583,7 @@ def _month_label(year, month) -> str:
     return f"{month} {year}"
 
 
-def get_shop_activity_matrix(distributor: str, city: str | None = None, year: int | None = None) -> dict:
+def get_shop_activity_matrix(distributor: str, city: str | None = None, year: int | None = None, category: str | None = None) -> dict:
     """
     Build a shop × month pivot table for the given distributor.
 
@@ -596,8 +596,9 @@ def get_shop_activity_matrix(distributor: str, city: str | None = None, year: in
       is_new      → True when the shop's first active month is within the last 2
                     months of the global data range
       Has Gaps    → is_new=False AND gap_months > 0
-      Consistent  → is_new=False AND gap_months=0 AND active_months >= 3
-      (none)      → established but sparse; appears only under "All" filter
+      Consistent  → is_new=False AND is_lapsed=False AND gap_months=0 AND active_months >= 3
+                    (actively ordering in latest month, no gaps, established)
+      (none)      → established but sparse OR lapsed; appears only under "All" filter
     """
     sb = get_supabase()
     query = (
@@ -609,6 +610,12 @@ def get_shop_activity_matrix(distributor: str, city: str | None = None, year: in
         query = query.eq("city", city)
     if year:
         query = query.eq("year", year)
+    if category:
+        cat_skus = _get_raw_skus_for_category(category)
+        if cat_skus:
+            query = query.in_("sku_name", cat_skus)
+        else:
+            return {"months": [], "shops": [], "data_range_months": []}
 
     rows = _fetch_all(query)
 
@@ -681,7 +688,11 @@ def get_shop_activity_matrix(distributor: str, city: str | None = None, year: in
                 "status":  status,
             })
 
-        is_new = first_ym in new_threshold_keys
+        is_new    = first_ym in new_threshold_keys
+        # is_lapsed: shop's last active month is NOT the latest global month.
+        # A lapsed shop stopped ordering — it must NOT be classified as Consistent
+        # even if it has no gap cells (those trailing months are INACTIVE, not GAP).
+        is_lapsed = last_ym != sorted_ym[-1]
 
         shops_out.append({
             "shop_name":     shop,
@@ -690,6 +701,7 @@ def get_shop_activity_matrix(distributor: str, city: str | None = None, year: in
             "active_months": active_count,
             "gap_months":    gap_count,
             "is_new":        is_new,
+            "is_lapsed":     is_lapsed,
         })
 
     # Sort shops by total revenue descending
