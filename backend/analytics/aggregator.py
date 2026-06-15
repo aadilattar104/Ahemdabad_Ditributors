@@ -583,7 +583,7 @@ def _month_label(year, month) -> str:
     return f"{month} {year}"
 
 
-def get_shop_activity_matrix(distributor: str, city: str | None = None, year: int | None = None, category: str | None = None, sku: str | None = None) -> dict:
+def get_shop_activity_matrix(distributor: str, city: str | None = None, year: int | None = None, category: str | None = None, sku: str | None = None, grammage: str | None = None) -> dict:
     """
     Build a shop × month pivot table for the given distributor.
 
@@ -607,13 +607,14 @@ def get_shop_activity_matrix(distributor: str, city: str | None = None, year: in
     sb = get_supabase()
     query = (
         sb.table("sales_records")
-        .select("shop_name, month, year, revenue")
+        .select("shop_name, month, year, revenue, sku_name")
         .eq("distributor_name", distributor)
     )
     if city:
         query = query.eq("city", city)
-    if year:
-        query = query.eq("year", year)
+    # NOTE: year filter intentionally omitted — the matrix shows the full cross-year
+    # activity timeline for each shop. Filtering by year would cut off shops whose
+    # history spans multiple years (e.g. Oct 2025 → May 2026).
 
     if sku:
         # Specific SKU filter takes precedence — expand canonical name to raw variants
@@ -631,6 +632,48 @@ def get_shop_activity_matrix(distributor: str, city: str | None = None, year: in
             return {"months": [], "shops": [], "data_range_months": []}
 
     rows = _fetch_all(query)
+
+    # ── Grammage filter — DB-driven via canonical SKU names ─────────────────
+    # Looks up canonical SKUs whose name ends with the grammage suffix,
+    # expands them to raw SKU names via sku_mappings, then filters rows.
+    # This is reliable regardless of distributor SKU naming conventions.
+    if grammage and not sku:  # skip if a specific SKU is already selected
+        GRAMMAGE_SUFFIX = {
+            "72g":  "72g",
+            "200g": ["200g", "185g"],
+        }
+        suffixes = GRAMMAGE_SUFFIX.get(grammage)
+        if suffixes:
+            if isinstance(suffixes, str):
+                suffixes = [suffixes]
+            try:
+                # Step 1: find canonical IDs whose name ends with any suffix
+                all_canonicals = (
+                    sb.table("sku_canonical")
+                    .select("id, name")
+                    .execute()
+                    .data or []
+                )
+                matched_ids = [
+                    c["id"] for c in all_canonicals
+                    if any(c.get("name", "").lower().endswith(s) for s in suffixes)
+                ]
+                # Step 2: expand to raw SKU names via sku_mappings
+                if matched_ids:
+                    mappings = (
+                        sb.table("sku_mappings")
+                        .select("raw_sku")
+                        .in_("canonical_id", matched_ids)
+                        .eq("source_type", "DISTRIBUTOR")
+                        .execute()
+                        .data or []
+                    )
+                    raw_set = {m["raw_sku"] for m in mappings if m.get("raw_sku")}
+                    rows = [r for r in rows if r.get("sku_name") in raw_set]
+                else:
+                    rows = []
+            except Exception as e:
+                print(f"[GRAMMAGE] Warning: DB lookup failed — {e}")
 
     if not rows:
         return {"months": [], "shops": [], "data_range_months": []}

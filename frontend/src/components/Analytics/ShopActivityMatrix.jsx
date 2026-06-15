@@ -2,12 +2,13 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
-async function fetchMatrix(distributor, city, year, category, sku) {
+async function fetchMatrix(distributor, city, year, category, sku, grammage) {
   const params = new URLSearchParams({ distributor });
   if (city)     params.set("city", city);
   if (year)     params.set("year", year);
   if (category) params.set("category", category);
   if (sku)      params.set("sku", sku);
+  if (grammage) params.set("grammage", grammage);
   const res = await fetch(`${BASE_URL}/shop-activity-matrix?${params}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
@@ -62,7 +63,7 @@ function classifyShop(shop) {
 }
 
 // ── PDF export via print window ───────────────────────────────────────────────
-function exportToPdf(distributor, filter, months, visibleShops, monthlySummary) {
+function exportToPdf(distributor, filter, months, visibleShops, monthlySummary, beats = {}) {
   const statusColor = {
     ACTIVE:   { bg: "#dcfce7", text: "#166534", border: "#bbf7d0" },
     GAP:      { bg: "#fee2e2", text: "#991b1b", border: "#fecaca" },
@@ -81,6 +82,7 @@ function exportToPdf(distributor, filter, months, visibleShops, monthlySummary) 
   const headerCells = months.map(m =>
     `<th>${m.replace(" ", "<br/>")}</th>`
   ).join("");
+  const beatHeaderCell = `<th>Beat</th>`;
 
   const rows = visibleShops.map(shop => {
     const cls = classifyShop(shop);
@@ -101,10 +103,12 @@ function exportToPdf(distributor, filter, months, visibleShops, monthlySummary) 
       background:${cls==="Has Gaps"?"#fee2e2":cls==="Consistent"?"#dcfce7":"#f3f4f6"};
       color:${cls==="Has Gaps"?"#991b1b":cls==="Consistent"?"#166534":"#6b7280"};">${cls}</span>` : "—";
 
+    const beatVal = beats[shop.shop_name] || "—";
     return `<tr>
       <td style="font-size:11px;padding:5px 8px;font-weight:500;white-space:nowrap;">${shop.shop_name}</td>
       ${dataCells}
       <td style="text-align:right;font-size:11px;padding:5px 8px;font-weight:600;">${fmt(shop.total_revenue)}</td>
+      <td style="text-align:center;font-size:11px;padding:5px 8px;color:#374151;">${beatVal}</td>
       <td style="text-align:center;font-size:11px;padding:5px 8px;color:#166534;font-weight:600;">${shop.active_months}</td>
       <td style="text-align:center;font-size:11px;padding:5px 8px;color:${shop.gap_months>0?"#991b1b":"#9ca3af"};font-weight:${shop.gap_months>0?600:400};">${shop.gap_months}</td>
       <td style="text-align:center;padding:5px 8px;">${clsBadge}</td>
@@ -124,7 +128,7 @@ function exportToPdf(distributor, filter, months, visibleShops, monthlySummary) 
     <td style="background:#f9fafb;font-size:11px;font-weight:600;color:#374151;padding:5px 8px;border-bottom:1.5px solid #e5e7eb;white-space:nowrap;">Monthly Summary</td>
     ${summaryDataCells}
     <td style="background:#f9fafb;text-align:right;font-size:11px;font-weight:600;padding:5px 8px;border-bottom:1.5px solid #e5e7eb;">${fmt(totalAllRevenue)}</td>
-    <td colspan="3" style="background:#f9fafb;border-bottom:1.5px solid #e5e7eb;"></td>
+    <td colspan="4" style="background:#f9fafb;border-bottom:1.5px solid #e5e7eb;"></td>
   </tr>`;
 
   const html = `<!DOCTYPE html>
@@ -167,6 +171,7 @@ function exportToPdf(distributor, filter, months, visibleShops, monthlySummary) 
         <th class="shop-col">Shop</th>
         ${headerCells}
         <th>Total Revenue</th>
+        <th>Beat</th>
         <th>Active</th>
         <th>Gaps</th>
         <th>Status</th>
@@ -209,7 +214,12 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
   const [distributor,  setDistributor]  = useState("");
   const [category,     setCategory]     = useState("");
   const [selSku,       setSelSku]       = useState("");       // selected canonical SKU chip
+  const [grammage,     setGrammage]     = useState("");       // selected grammage bucket
   const [canonicalSkus, setCanonicalSkus] = useState([]);    // canonical SKUs for current category
+  const [beats,         setBeats]         = useState({});    // { shop_name: beat }
+  const [beatFilter,    setBeatFilter]    = useState("");     // selected beat value
+  const [editingBeat,   setEditingBeat]   = useState(null);  // shop_name being edited
+  const [beatDraft,     setBeatDraft]     = useState("");
 
   // Fetch canonical SKUs when category changes — for the SKU chip row
   useEffect(() => {
@@ -228,22 +238,39 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
   }, [category]);
 
   useEffect(() => {
+    if (!distributor) { setBeats({}); setBeatFilter(""); return; }
+    fetch(`${BASE_URL}/shop-beats?distributor=${encodeURIComponent(distributor)}`)
+      .then(r => r.json())
+      .then(rows => {
+        const map = {};
+        (rows || []).forEach(r => { map[r.shop_name] = r.beat; });
+        setBeats(map);
+      })
+      .catch(() => setBeats({}));
+  }, [distributor]);
+
+  useEffect(() => {
     if (!distributor) { setData(null); return; }
     setLoading(true); setError("");
-    fetchMatrix(distributor, city, year, category, selSku)
+    // year intentionally not passed — matrix must show full cross-year shop history
+    fetchMatrix(distributor, city, null, category, selSku, grammage)
       .then(setData)
       .catch(e => setError(e.message || "Failed to load matrix"))
       .finally(() => setLoading(false));
-  }, [distributor, city, year, category, selSku]);
+  }, [distributor, city, category, selSku, grammage]);
 
   // Sort months defensively
   const months = data ? [...data.months].sort((a, b) => monthSortKey(a) - monthSortKey(b)) : [];
 
+  // Distinct beats for dropdown
+  const distinctBeats = [...new Set(Object.values(beats))].filter(Boolean).sort();
+
   // Filter shops
   const visibleShops = data
     ? data.shops.filter(shop => {
-        if (filter === "All") return true;
-        return classifyShop(shop) === filter;
+        if (filter !== "All" && classifyShop(shop) !== filter) return false;
+        if (beatFilter && beats[shop.shop_name] !== beatFilter) return false;
+        return true;
       })
     : [];
 
@@ -310,7 +337,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
             <button
               onClick={e => {
                 e.stopPropagation();
-                exportToPdf(distributor, filter, months, visibleShops, monthlySummary);
+                exportToPdf(distributor, filter, months, visibleShops, monthlySummary, beats);
               }}
               style={{
                 display: "inline-flex", alignItems: "center", gap: 5,
@@ -339,7 +366,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
             </label>
             <select
               value={distributor}
-              onChange={e => { setDistributor(e.target.value); setFilter("All"); setCategory(""); setData(null); }}
+              onChange={e => { setDistributor(e.target.value); setFilter("All"); setCategory(""); setGrammage(""); setData(null); }}
               style={S.select}
             >
               <option value="">Select distributor…</option>
@@ -395,6 +422,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                     } else {
                       setSelSku(s.name);
                       setFilter("Has Gaps");
+                      setGrammage(""); // SKU already implies a grammage — clear it to avoid conflict
                     }
                     setData(null);
                   }}
@@ -416,6 +444,66 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                 <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
                   Showing shops with order history for "{selSku}"
                 </span>
+              )}
+            </div>
+          )}
+
+          {/* ── Grammage filter ─────────────────────────────────────────── */}
+          {distributor && (
+            <div style={{ padding: "8px 18px", borderBottom: "0.5px solid var(--color-border-tertiary)", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em" }}>Grammage</span>
+              {[
+                { key: "72g",  label: "72g" },
+                { key: "200g", label: "200g / 185g" },
+              ].map(g => (
+                <button
+                  key={g.key}
+                  onClick={() => {
+                    const next = grammage === g.key ? "" : g.key;
+                    setGrammage(next);
+                    if (next) setSelSku(""); // grammage is broader than a specific SKU — clear SKU chip
+                    setData(null);
+                  }}
+                  style={{
+                    fontSize: 12, padding: "3px 12px",
+                    borderRadius: "var(--border-radius-md)",
+                    border: `0.5px solid ${grammage === g.key ? "var(--color-text-info, #378ADD)" : "var(--color-border-secondary)"}`,
+                    background: grammage === g.key ? "rgba(55,138,221,0.08)" : "transparent",
+                    color: grammage === g.key ? "var(--color-text-info, #378ADD)" : "var(--color-text-secondary)",
+                    fontWeight: grammage === g.key ? 500 : 400,
+                    cursor: "pointer",
+                  }}
+                >
+                  {g.label}
+                </button>
+              ))}
+              {grammage && (
+                <button
+                  onClick={() => { setGrammage(""); setData(null); }}
+                  style={{ fontSize: 11, color: "var(--color-text-tertiary)", background: "transparent", border: "none", cursor: "pointer" }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* ── Beat filter dropdown ────────────────────────────────────── */}
+          {data && distinctBeats.length > 0 && (
+            <div style={{ padding: "8px 18px", borderBottom: "0.5px solid var(--color-border-tertiary)", display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em", whiteSpace: "nowrap" }}>Beat</span>
+              <select
+                value={beatFilter}
+                onChange={e => setBeatFilter(e.target.value)}
+                style={S.select}
+              >
+                <option value="">All beats</option>
+                {distinctBeats.map(b => <option key={b} value={b}>{b}</option>)}
+              </select>
+              {beatFilter && (
+                <button onClick={() => setBeatFilter("")} style={{ ...S.iconBtn, fontSize: 12, color: "var(--color-text-tertiary)" }} title="Clear beat filter">
+                  <i className="ti ti-x" aria-hidden />
+                </button>
               )}
             </div>
           )}
@@ -497,6 +585,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                     ))}
                     {/* Summary cols */}
                     <th style={{ ...S.th, minWidth: 80 }}>Total Rev</th>
+                    <th style={{ ...S.th, minWidth: 100 }}>Beat</th>
                     <th style={{ ...S.th, minWidth: 56 }}>Active</th>
                     <th style={{ ...S.th, minWidth: 48 }}>Gaps</th>
                     <th style={{ ...S.th, minWidth: 80 }}>Status</th>
@@ -529,7 +618,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                       <td style={{ ...S.td, textAlign: "right", fontSize: 12, fontWeight: 600, paddingRight: 14, color: "var(--color-text-primary)" }}>
                         {fmt(visibleShops.reduce((s, sh) => s + (sh.total_revenue || 0), 0))}
                       </td>
-                      <td colSpan={3} />
+                      <td colSpan={4} />
                     </tr>
                   </tbody>
                 )}
@@ -632,6 +721,69 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                         {/* Summary */}
                         <td style={{ ...S.td, textAlign: "right", fontWeight: 500, fontSize: 12, paddingRight: 14 }}>
                           {fmt(shop.total_revenue)}
+                        </td>
+
+                        {/* Beat cell with inline edit */}
+                        <td style={{ ...S.td, textAlign: "center", fontSize: 12, minWidth: 100 }}>
+                          {editingBeat === shop.shop_name ? (
+                            <input
+                              autoFocus
+                              value={beatDraft}
+                              onChange={e => setBeatDraft(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === "Enter") {
+                                  const trimmed = beatDraft.trim();
+                                  if (trimmed) {
+                                    setBeats(prev => ({ ...prev, [shop.shop_name]: trimmed }));
+                                    fetch(`${BASE_URL}/shop-beats`, {
+                                      method: "POST",
+                                      headers: { "Content-Type": "application/json" },
+                                      body: JSON.stringify({ shop_name: shop.shop_name, distributor_name: distributor, beat: trimmed }),
+                                    }).catch(() => {});
+                                  }
+                                  setEditingBeat(null);
+                                }
+                                if (e.key === "Escape") setEditingBeat(null);
+                              }}
+                              onBlur={() => {
+                                const trimmed = beatDraft.trim();
+                                if (trimmed) {
+                                  setBeats(prev => ({ ...prev, [shop.shop_name]: trimmed }));
+                                  fetch(`${BASE_URL}/shop-beats`, {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/json" },
+                                    body: JSON.stringify({ shop_name: shop.shop_name, distributor_name: distributor, beat: trimmed }),
+                                  }).catch(() => {});
+                                }
+                                setEditingBeat(null);
+                              }}
+                              style={{
+                                fontSize: 12, padding: "2px 6px", width: 80,
+                                borderRadius: "var(--border-radius-sm)",
+                                border: "0.5px solid var(--color-border-secondary)",
+                                background: "var(--color-background-primary)",
+                                color: "var(--color-text-primary)", outline: "none",
+                              }}
+                            />
+                          ) : (
+                            <span
+                              onClick={() => { setEditingBeat(shop.shop_name); setBeatDraft(beats[shop.shop_name] || ""); }}
+                              title="Click to assign beat"
+                              style={{
+                                cursor: "pointer",
+                                color: beats[shop.shop_name] ? "var(--color-text-primary)" : "var(--color-text-tertiary)",
+                                fontSize: beats[shop.shop_name] ? 12 : 11,
+                                padding: "2px 6px",
+                                borderRadius: "var(--border-radius-sm)",
+                                border: "0.5px solid transparent",
+                                display: "inline-block",
+                              }}
+                              onMouseEnter={e => e.currentTarget.style.border = "0.5px solid var(--color-border-secondary)"}
+                              onMouseLeave={e => e.currentTarget.style.border = "0.5px solid transparent"}
+                            >
+                              {beats[shop.shop_name] || "+ Add"}
+                            </span>
+                          )}
                         </td>
                         <td style={{ ...S.td, textAlign: "center", fontSize: 12 }}>
                           <span style={{ color: STATUS.ACTIVE.text, fontWeight: 600 }}>
