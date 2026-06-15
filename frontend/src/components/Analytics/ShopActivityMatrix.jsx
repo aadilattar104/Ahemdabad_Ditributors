@@ -2,11 +2,12 @@ import { useState, useEffect, useRef, useCallback } from "react";
 
 const BASE_URL = process.env.REACT_APP_API_URL || "http://localhost:8000";
 
-async function fetchMatrix(distributor, city, year, category) {
+async function fetchMatrix(distributor, city, year, category, sku) {
   const params = new URLSearchParams({ distributor });
   if (city)     params.set("city", city);
   if (year)     params.set("year", year);
   if (category) params.set("category", category);
+  if (sku)      params.set("sku", sku);
   const res = await fetch(`${BASE_URL}/shop-activity-matrix?${params}`);
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
@@ -61,7 +62,7 @@ function classifyShop(shop) {
 }
 
 // ── PDF export via print window ───────────────────────────────────────────────
-function exportToPdf(distributor, filter, months, visibleShops) {
+function exportToPdf(distributor, filter, months, visibleShops, monthlySummary) {
   const statusColor = {
     ACTIVE:   { bg: "#dcfce7", text: "#166534", border: "#bbf7d0" },
     GAP:      { bg: "#fee2e2", text: "#991b1b", border: "#fecaca" },
@@ -110,6 +111,22 @@ function exportToPdf(distributor, filter, months, visibleShops) {
     </tr>`;
   }).join("");
 
+  // Monthly summary row for PDF
+  const totalAllRevenue = visibleShops.reduce((s, sh) => s + (sh.total_revenue || 0), 0);
+  const summaryDataCells = months.map(m => {
+    const ms = monthlySummary[m] || { revenue: 0, shopsServed: 0 };
+    return `<td style="background:#f9fafb;text-align:center;padding:5px 6px;border-bottom:1.5px solid #e5e7eb;">
+      <div style="font-size:11px;font-weight:600;color:#111;">${ms.revenue > 0 ? fmt(ms.revenue) : "—"}</div>
+      <div style="font-size:10px;color:#6b7280;">${ms.shopsServed > 0 ? `${ms.shopsServed} shop${ms.shopsServed !== 1 ? "s" : ""}` : "—"}</div>
+    </td>`;
+  }).join("");
+  const summaryRow = `<tr>
+    <td style="background:#f9fafb;font-size:11px;font-weight:600;color:#374151;padding:5px 8px;border-bottom:1.5px solid #e5e7eb;white-space:nowrap;">Monthly Summary</td>
+    ${summaryDataCells}
+    <td style="background:#f9fafb;text-align:right;font-size:11px;font-weight:600;padding:5px 8px;border-bottom:1.5px solid #e5e7eb;">${fmt(totalAllRevenue)}</td>
+    <td colspan="3" style="background:#f9fafb;border-bottom:1.5px solid #e5e7eb;"></td>
+  </tr>`;
+
   const html = `<!DOCTYPE html>
 <html>
 <head>
@@ -155,7 +172,10 @@ function exportToPdf(distributor, filter, months, visibleShops) {
         <th>Status</th>
       </tr>
     </thead>
-    <tbody>${rows}</tbody>
+    <tbody>
+      ${summaryRow}
+      ${rows}
+    </tbody>
   </table>
 </body>
 </html>`;
@@ -185,18 +205,36 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
   const [error,        setError]        = useState("");
   const [filter,       setFilter]       = useState("All");
   const [hovered,      setHovered]      = useState(null);
-  const [expanded,     setExpanded]     = useState(false);  // collapsed by default
-  const [distributor,  setDistributor]  = useState("");     // own internal selection
-  const [category,     setCategory]     = useState("");     // "Namkeen" | "Khakhara" | ""
+  const [expanded,     setExpanded]     = useState(false);
+  const [distributor,  setDistributor]  = useState("");
+  const [category,     setCategory]     = useState("");
+  const [selSku,       setSelSku]       = useState("");       // selected canonical SKU chip
+  const [canonicalSkus, setCanonicalSkus] = useState([]);    // canonical SKUs for current category
+
+  // Fetch canonical SKUs when category changes — for the SKU chip row
+  useEffect(() => {
+    setSelSku("");
+    setFilter("All");  // reset subcategory filter when category/SKU selection changes
+    if (!category) { setCanonicalSkus([]); return; }
+    fetch(`${BASE_URL}/sku/canonical?source_type=DISTRIBUTOR`)
+      .then(r => r.json())
+      .then(rows => {
+        const filtered = Array.isArray(rows)
+          ? rows.filter(r => r.category === category)
+          : [];
+        setCanonicalSkus(filtered);
+      })
+      .catch(() => setCanonicalSkus([]));
+  }, [category]);
 
   useEffect(() => {
     if (!distributor) { setData(null); return; }
     setLoading(true); setError("");
-    fetchMatrix(distributor, city, year, category)
+    fetchMatrix(distributor, city, year, category, selSku)
       .then(setData)
       .catch(e => setError(e.message || "Failed to load matrix"))
       .finally(() => setLoading(false));
-  }, [distributor, city, year, category]);
+  }, [distributor, city, year, category, selSku]);
 
   // Sort months defensively
   const months = data ? [...data.months].sort((a, b) => monthSortKey(a) - monthSortKey(b)) : [];
@@ -272,7 +310,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
             <button
               onClick={e => {
                 e.stopPropagation();
-                exportToPdf(distributor, filter, months, visibleShops);
+                exportToPdf(distributor, filter, months, visibleShops, monthlySummary);
               }}
               style={{
                 display: "inline-flex", alignItems: "center", gap: 5,
@@ -339,6 +377,46 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                   {cat || "All"}
                 </button>
               ))}
+            </div>
+          )}
+
+          {/* ── SKU chip row — quick-filter to a specific product, shows Has Gaps shops ── */}
+          {distributor && category && canonicalSkus.length > 0 && (
+            <div style={{ padding: "8px 18px", borderBottom: "0.5px solid var(--color-border-tertiary)", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em" }}>SKU</span>
+              {canonicalSkus.map(s => (
+                <button
+                  key={s.id}
+                  onClick={() => {
+                    if (selSku === s.name) {
+                      // Toggle off — clear SKU and reset filter
+                      setSelSku("");
+                      setFilter("All");
+                    } else {
+                      setSelSku(s.name);
+                      setFilter("Has Gaps");
+                    }
+                    setData(null);
+                  }}
+                  style={{
+                    fontSize: 12, padding: "3px 12px",
+                    borderRadius: "var(--border-radius-md)",
+                    border: `0.5px solid ${selSku === s.name ? "var(--color-text-info, #378ADD)" : "var(--color-border-secondary)"}`,
+                    background: selSku === s.name ? "rgba(55,138,221,0.08)" : "transparent",
+                    color: selSku === s.name ? "var(--color-text-info, #378ADD)" : "var(--color-text-secondary)",
+                    fontWeight: selSku === s.name ? 500 : 400,
+                    cursor: "pointer",
+                  }}
+                  title={`Show shops that ordered ${s.name} — with gaps highlighted`}
+                >
+                  {s.name}
+                </button>
+              ))}
+              {selSku && (
+                <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+                  Showing shops with order history for "{selSku}"
+                </span>
+              )}
             </div>
           )}
 

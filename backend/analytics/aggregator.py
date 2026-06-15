@@ -583,7 +583,7 @@ def _month_label(year, month) -> str:
     return f"{month} {year}"
 
 
-def get_shop_activity_matrix(distributor: str, city: str | None = None, year: int | None = None, category: str | None = None) -> dict:
+def get_shop_activity_matrix(distributor: str, city: str | None = None, year: int | None = None, category: str | None = None, sku: str | None = None) -> dict:
     """
     Build a shop × month pivot table for the given distributor.
 
@@ -599,6 +599,10 @@ def get_shop_activity_matrix(distributor: str, city: str | None = None, year: in
       Consistent  → is_new=False AND is_lapsed=False AND gap_months=0 AND active_months >= 3
                     (actively ordering in latest month, no gaps, established)
       (none)      → established but sparse OR lapsed; appears only under "All" filter
+
+    sku — optional canonical SKU name (e.g. "Chana Jor 72g"). Restricts to shops
+          that bought this specific SKU, expanded to all raw variants via
+          _load_sku_maps(). Takes precedence over category if both are passed.
     """
     sb = get_supabase()
     query = (
@@ -610,7 +614,16 @@ def get_shop_activity_matrix(distributor: str, city: str | None = None, year: in
         query = query.eq("city", city)
     if year:
         query = query.eq("year", year)
-    if category:
+
+    if sku:
+        # Specific SKU filter takes precedence — expand canonical name to raw variants
+        _, reverse = _load_sku_maps("DISTRIBUTOR")
+        raw_names = reverse.get(sku)
+        if raw_names:
+            query = query.in_("sku_name", raw_names)
+        else:
+            query = query.eq("sku_name", sku)
+    elif category:
         cat_skus = _get_raw_skus_for_category(category)
         if cat_skus:
             query = query.in_("sku_name", cat_skus)
