@@ -4,6 +4,7 @@ from .sheet_selector import select_best_sheet
 from .generic_parser import parse_generic
 from .normalizer import normalize_records
 from .validator import validate_records
+from .tej_txt_parser import is_tej_txt_format, parse_tej_txt
 
 
 def _get_all_sheets(file_bytes: bytes, filename: str) -> list[tuple[pd.DataFrame, str]]:
@@ -43,24 +44,58 @@ def run_extraction_pipeline(
 ) -> dict:
     """
     Single generic extraction pipeline.
-    Works for any distributor Excel format — party-wise grouped or invoice register.
+    Works for any distributor Excel format — party-wise grouped or invoice register —
+    and now also Pattern G: TEJ Sales Corporation fixed-width .TXT reports.
+
+    PATTERN G — TXT ARCHITECTURE:
+    Plain-text fixed-width reports (.txt extension) are detected first, before any
+    Excel sheet logic runs, since pandas cannot read this file type. Detection checks
+    for "Inv Date", "Invno", "Kgs/Ltr" markers unique to this report format.
 
     MULTI-SHEET ARCHITECTURE:
-    When a file has multiple valid data sheets (e.g. Sangeeta FY 25-26 + FY 26-27),
+    When an Excel file has multiple valid data sheets (e.g. Sangeeta FY 25-26 + FY 26-27),
     ALL sheets are parsed and records are combined. This ensures full-year data is
     captured when distributors split data across FY sheets.
 
     DATE ARCHITECTURE:
-    month and year are derived per-transaction from bill_date inside generic_parser._make().
-    No external month/year is passed. Each record carries its own correct date bucket.
+    month and year are derived per-transaction from bill_date inside generic_parser._make()
+    (or directly inside parse_tej_txt() for Pattern G). No external month/year is passed.
 
     CITY ARCHITECTURE:
-    city is set to "Mumbai" by Mumbai-format parsers. Ahmedabad records have city=None.
+    city is set to "Mumbai" by Mumbai-format parsers (including Pattern G — TEJ Sales
+    Corporation is Mumbai-based). Ahmedabad records have city=None.
 
     MARGIN ARCHITECTURE:
     Pattern C (Vidhaata) files carry margin_pct per row. Extracted and returned
     separately as margin_records for upsert into shop_margins by main.py.
     """
+    # ── Pattern G — plain text fixed-width report (checked FIRST, before Excel logic) ──
+    if is_tej_txt_format(file_bytes, filename):
+        print(f"[PIPELINE] Detected Pattern G (TEJ Sales TXT report)")
+        all_raw = parse_tej_txt(file_bytes, distributor_name)
+        print(f"[PIPELINE] Pattern G raw_records={len(all_raw)}")
+
+        normalized = normalize_records(all_raw, distributor_name, upload_id)
+        valid, skipped = validate_records(normalized)
+        print(f"[PIPELINE] valid={len(valid)} skipped={len(skipped)}")
+
+        months = [r["month"] for r in valid if r.get("month")]
+        years  = [r["year"]  for r in valid if r.get("year")]
+        summary_month = months[0] if months else None
+        summary_year  = years[0]  if years  else None
+
+        return {
+            "records":        valid,
+            "skipped":        skipped,
+            "format":         "TEJ_TXT",
+            "month":          summary_month,
+            "year":           summary_year,
+            "record_count":   len(valid),
+            "city":           "Mumbai",
+            "margin_records": [],
+        }
+
+    # ── Excel pipeline (Patterns A–F) ─────────────────────────────────────────────
     # Step 1 — Get all valid sheets
     all_sheets = _get_all_sheets(file_bytes, filename)
 
