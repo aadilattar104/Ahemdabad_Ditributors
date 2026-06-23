@@ -306,7 +306,7 @@ def update_distributor(dist_id: str, body: dict):
 @app.get("/analytics/overview")
 def analytics_overview(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     city: str = Query(None),
@@ -318,7 +318,7 @@ def analytics_overview(
 @app.get("/analytics/shops")
 def analytics_shops(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     city: str = Query(None),
@@ -332,7 +332,7 @@ def analytics_mom_trend(
     distributor: str = Query(None),
     sku: str = Query(None),
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     city: str = Query(None),
     category: str = Query(None),
 ):
@@ -343,7 +343,7 @@ def analytics_distributor_mom(
     distributor: str = Query(None),
     sku: str = Query(None),
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     city: str = Query(None),
     category: str = Query(None),
 ):
@@ -353,7 +353,7 @@ def analytics_distributor_mom(
 @app.get("/analytics/top-shops")
 def analytics_top_shops(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     limit: int = Query(10),
@@ -366,7 +366,7 @@ def analytics_top_shops(
 @app.get("/analytics/top-shops-by-qty")
 def analytics_top_shops_qty(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     limit: int = Query(10),
@@ -389,7 +389,7 @@ def analytics_skus():
 @app.get("/analytics/recurring-shops")
 def analytics_recurring_shops(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     city: str = Query(None),
@@ -401,7 +401,7 @@ def analytics_recurring_shops(
 @app.get("/analytics/top-shops-sku-breakdown")
 def analytics_top_shops_sku_breakdown(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     limit: int = Query(10),
@@ -499,7 +499,7 @@ async def manual_mapping_confirm(
 @app.get("/export/excel")
 def export_excel(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
 ):
     xlsx_bytes = export_to_excel(month=month, year=year, distributor=distributor)

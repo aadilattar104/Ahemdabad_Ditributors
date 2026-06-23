@@ -104,6 +104,34 @@ def _norm_sku_mt(name: str | None, aliases: dict) -> str:
     return aliases.get(raw, raw)
 
 
+
+def _apply_multi_filter(query, field, value):
+    """Apply .eq() for single value, .in_() for comma-separated multiple values."""
+    if not value:
+        return query
+    vals = [v.strip() for v in str(value).split(",") if v.strip()]
+    if not vals:
+        return query
+    if len(vals) == 1:
+        return query.eq(field, vals[0])
+    return query.in_(field, vals)
+
+
+def _apply_year_filter(query, year):
+    """Same as _apply_multi_filter but casts values to int."""
+    if not year:
+        return query
+    vals = [v.strip() for v in str(year).split(",") if v.strip()]
+    if not vals:
+        return query
+    try:
+        int_vals = [int(v) for v in vals]
+    except ValueError:
+        return query
+    if len(int_vals) == 1:
+        return query.eq("year", int_vals[0])
+    return query.in_("year", int_vals)
+
 def _month_order(month: str | None) -> int:
     if not month:
         return 99
@@ -157,10 +185,10 @@ def get_overview(month=None, year=None, distributor=None, sku=None, city=None, c
     cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, shop_name, qty, revenue")
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if distributor: query = query.eq("distributor_name", distributor)
-    if city:        query = query.eq("city", city)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)
     rows = _fetch_all(query)
 
@@ -203,10 +231,10 @@ def get_shops(month=None, year=None, distributor=None, sku=None, city=None, cate
     query = sb.table("sales_records").select(
         "distributor_name, shop_name, shop_type, qty, revenue, month, year, bill_no"
     )
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if distributor: query = query.eq("distributor_name", distributor)
-    if city:        query = query.eq("city", city)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)
     rows = _fetch_all(query)
 
@@ -241,10 +269,10 @@ def get_mom_trend(distributor=None, sku=None, month=None, year=None, city=None, 
     cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, month, year, qty, revenue")
-    if distributor: query = query.eq("distributor_name", distributor)
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if city:        query = query.eq("city", city)
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)
     rows = _fetch_all(query)
 
@@ -301,10 +329,10 @@ def get_recurring_shops(month=None, year=None, distributor=None, sku=None, city=
     query = sb.table("sales_records").select(
         "distributor_name, shop_name, sku_name, bill_no, bill_date, qty, revenue"
     )
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if distributor: query = query.eq("distributor_name", distributor)
-    if city:        query = query.eq("city", city)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
     rows = _fetch_all(query)
 
@@ -327,10 +355,10 @@ def get_top_shops_sku_breakdown(month=None, year=None, distributor=None, sku=Non
     cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select("shop_name, sku_name, qty, revenue")
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if distributor: query = query.eq("distributor_name", distributor)
-    if city:        query = query.eq("city", city)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
     rows = _fetch_all(query)
 
@@ -362,10 +390,10 @@ def get_distributor_mom(distributor=None, sku=None, month=None, year=None, city=
     cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, shop_name, month, year, qty, revenue")
-    if distributor: query = query.eq("distributor_name", distributor)
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if city:        query = query.eq("city", city)
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
     rows = _fetch_all(query)
 

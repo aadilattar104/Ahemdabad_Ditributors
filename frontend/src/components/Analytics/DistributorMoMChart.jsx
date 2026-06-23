@@ -121,6 +121,7 @@ export default function DistributorMoMChart({ data = [], loading = false, select
     "July","August","September","October","November","December"];
 
   const distributors = [...new Set(data.map(r => r.distributor_name))].sort();
+  const useVertical = distributors.length > 1;  // horizontal when 1 distributor, vertical when 2+
 
   // Build pivot: { monthLabel → { dist__rev, dist__qty, ... } }
   const pivotMap = {};
@@ -151,7 +152,7 @@ export default function DistributorMoMChart({ data = [], loading = false, select
       </div>
 
       <ResponsiveContainer width="100%" height={320}>
-        <BarChart data={chartData} margin={{ top: selectedDistributor ? 28 : 64, right: 12, left: 0, bottom: 8 }} barCategoryGap="25%" barGap={4}>
+        <BarChart data={chartData} margin={{ top: useVertical ? 64 : 28, right: 12, left: 0, bottom: 8 }} barCategoryGap="25%" barGap={4}>
           <CartesianGrid vertical={false} stroke="var(--color-border-tertiary)" strokeDasharray="4 4" />
           <XAxis
             dataKey="label"
@@ -177,7 +178,7 @@ export default function DistributorMoMChart({ data = [], loading = false, select
               radius={[4, 4, 0, 0]}
               barSize={28}
             >
-              <LabelList dataKey={`${dist}__rev`} content={(props) => <DataLabel {...props} vertical={!selectedDistributor} />} />
+              <LabelList dataKey={`${dist}__rev`} content={(props) => <DataLabel {...props} vertical={useVertical} />} />
             </Bar>
           ))}
         </BarChart>
