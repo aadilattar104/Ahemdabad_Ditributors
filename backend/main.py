@@ -266,10 +266,10 @@ def rename_distributor(body: dict):
         raise HTTPException(status_code=400, detail="Names are already the same")
 
     # 1. Update all uploads rows with this distributor name
-    sb.table("uploads").update({"distributor_name": new_name}).eq("distributor_name", old_name).execute()
+    sb.table("uploads").update({"distributor_name": new_name}).ilike("distributor_name", old_name).execute()
 
     # 2. Update all sales_records rows
-    sb.table("sales_records").update({"distributor_name": new_name}).eq("distributor_name", old_name).execute()
+    sb.table("sales_records").update({"distributor_name": new_name}).ilike("distributor_name", old_name).execute()
 
     # 3. Update distributors table — if new_name already exists, delete the old row to avoid duplicate
     existing_new = sb.table("distributors").select("id").eq("distributor_name", new_name).execute()
@@ -278,7 +278,9 @@ def rename_distributor(body: dict):
         sb.table("distributors").delete().eq("distributor_name", old_name).execute()
     else:
         # rename the distributors row itself
-        sb.table("distributors").update({"distributor_name": new_name}).eq("distributor_name", old_name).execute()
+        sb.table("distributors").update({"distributor_name": new_name}).ilike("distributor_name", old_name).execute()
+    from chat import _get_actual_distributor_names
+    _get_actual_distributor_names.cache_clear()
 
     return {"ok": True, "old_name": old_name, "new_name": new_name}
 
@@ -1239,4 +1241,383 @@ async def chat_endpoint(body: dict):
         "answer": result["answer"],
         "sql":    result["sql"],
         "error":  result["error"],
+    }
+
+# =============================================================================
+# PRIMARY SALES MIS ENDPOINTS  (drop-in replacement for the MIS section)
+# Fix: query materialized views instead of raw mis_transactions table,
+#      which was hitting Supabase's 1000-row server limit and silently
+#      returning only Apr-2026 data.
+# =============================================================================
+
+SEGMENT_ORDER = [
+    "Sampling", "D2C", "Amazon", "Quickcommerce",
+    "Retail-MT", "Retail - MT", "Retail-GT", "Retail - GT",
+    "Institutional", "Gifting",
+]
+
+FY_MONTH_ORDER = ["Apr", "May", "Jun", "Jul", "Aug", "Sep",
+                  "Oct", "Nov", "Dec", "Jan", "Feb", "Mar"]
+
+def _month_label_sort(label: str, fy: str = "") -> int:
+    try:
+        abbr = label.split("-")[0][:3]
+        return FY_MONTH_ORDER.index(abbr)
+    except Exception:
+        return 99
+
+
+# ── /mis/filters ──────────────────────────────────────────────────────────────
+# Use the aggregated view — tiny result set, no limit issues.
+
+@app.get("/mis/filters")
+def mis_filters():
+    sb = get_supabase()
+
+    # mis_segment_monthly has one row per (fy, month, segment, category) — very small
+    rows = sb.table("mis_segment_monthly").select(
+        "financial_year, month, month_number, segment_category, category"
+    ).execute().data
+
+    fys      = sorted({r["financial_year"] for r in rows if r.get("financial_year")}, reverse=True)
+    seg_set  = {r.get("segment_category") for r in rows}
+    segments = [s for s in SEGMENT_ORDER if s in seg_set] + \
+               [s for s in seg_set if s and s not in SEGMENT_ORDER]
+    categories = sorted({r["category"] for r in rows if r.get("category")})
+    month_set  = {r["month"] for r in rows if r.get("month")}
+    months     = sorted(month_set, key=lambda m: _month_label_sort(m))
+
+    return {
+        "financial_years":    fys,
+        "months":             months,
+        "segment_categories": segments,
+        "categories":         categories,
+    }
+
+
+# ── /mis/segment-table ────────────────────────────────────────────────────────
+# Reads from mis_segment_monthly (materialized view) — max ~200 rows ever.
+
+@app.get("/mis/segment-table")
+def mis_segment_table(
+    financial_year:   str = Query(None),
+    month:            str = Query(None),
+    segment_category: str = Query(None),
+    category:         str = Query(None),
+):
+    sb = get_supabase()
+    q  = sb.table("mis_segment_monthly").select(
+        "financial_year, month, month_number, segment_category, category, total_revenue, total_qty, order_count"
+    )
+    if financial_year:   q = q.eq("financial_year", financial_year)
+    if month:            q = q.eq("month", month)
+    if segment_category: q = q.eq("segment_category", segment_category)
+    if category:         q = q.eq("category", category)
+    rows = q.execute().data  # view rows are tiny — no limit needed
+
+    all_months = sorted(
+        {r["month"] for r in rows if r.get("month")},
+        key=lambda m: _month_label_sort(m, financial_year or ""),
+    )
+
+    pivot: dict = {}
+    for r in rows:
+        seg = r.get("segment_category") or "Unknown"
+        mon = r.get("month") or ""
+        if seg not in pivot:
+            pivot[seg] = {}
+        if mon not in pivot[seg]:
+            pivot[seg][mon] = {"revenue": 0.0, "qty": 0, "orders": 0}
+        pivot[seg][mon]["revenue"] += float(r.get("total_revenue") or 0)
+        pivot[seg][mon]["qty"]     += int(r.get("total_qty") or 0)
+        pivot[seg][mon]["orders"]  += int(r.get("order_count") or 0)
+
+    ordered = [s for s in SEGMENT_ORDER if s in pivot] + \
+              [s for s in pivot if s not in SEGMENT_ORDER]
+
+    result_rows = []
+    grand_rev   = 0.0
+    for seg in ordered:
+        cells   = pivot.get(seg, {})
+        row_rev = sum(cells.get(m, {}).get("revenue", 0) for m in all_months)
+        grand_rev += row_rev
+        result_rows.append({
+            "segment": seg,
+            "cells": {
+                m: {
+                    "revenue": round(cells.get(m, {}).get("revenue", 0), 2),
+                    "qty":     cells.get(m, {}).get("qty", 0),
+                    "orders":  cells.get(m, {}).get("orders", 0),
+                }
+                for m in all_months
+            },
+            "total_revenue": round(row_rev, 2),
+            "total_qty":     sum(cells.get(m, {}).get("qty", 0) for m in all_months),
+        })
+
+    return {
+        "months":              all_months,
+        "rows":                result_rows,
+        "grand_total_revenue": round(grand_rev, 2),
+        "financial_year":      financial_year,
+    }
+
+
+# ── /mis/customer-table ───────────────────────────────────────────────────────
+# Reads from mis_customer_monthly (materialized view).
+# Uses range-based pagination to bypass Supabase's 1000-row server limit.
+
+@app.get("/mis/customer-table")
+def mis_customer_table(
+    financial_year:   str = Query(None),
+    month:            str = Query(None),
+    segment_category: str = Query(None),
+    category:         str = Query(None),
+    customer_search:  str = Query(None),
+    page:             int = Query(1),
+    page_size:        int = Query(50),
+):
+    sb = get_supabase()
+    # Fetch ALL rows from the materialized view using range pagination
+    # to bypass Supabase's server-side row limit (1000 default)
+    all_rows = []
+    batch_size = 1000
+    offset = 0
+    while True:
+        q = sb.table("mis_customer_monthly").select(
+            "financial_year, month, customer_name, segment_category, category, total_revenue, total_qty"
+        )
+        if financial_year:   q = q.eq("financial_year", financial_year)
+        if month:            q = q.eq("month", month)
+        if segment_category: q = q.eq("segment_category", segment_category)
+        if category:         q = q.eq("category", category)
+        if customer_search:  q = q.ilike("customer_name", f"%{customer_search}%")
+        batch = q.range(offset, offset + batch_size - 1).execute().data
+        all_rows.extend(batch)
+        if len(batch) < batch_size:
+            break
+        offset += batch_size
+    rows = all_rows
+    all_months = sorted(
+        {r["month"] for r in rows if r.get("month")},
+        key=lambda m: _month_label_sort(m, financial_year or ""),
+    )
+    customer_pivot: dict = {}
+    for r in rows:
+        cust = r.get("customer_name") or "Unknown"
+        mon  = r.get("month") or ""
+        if cust not in customer_pivot:
+            customer_pivot[cust] = {
+                "cells": {},
+                "segment":  r.get("segment_category", ""),
+                "category": r.get("category", ""),
+            }
+        if mon not in customer_pivot[cust]["cells"]:
+            customer_pivot[cust]["cells"][mon] = {"revenue": 0.0, "qty": 0}
+        # Accumulate — customer can appear in multiple categories in the view
+        customer_pivot[cust]["cells"][mon]["revenue"] += float(r.get("total_revenue") or 0)
+        customer_pivot[cust]["cells"][mon]["qty"]     += int(r.get("total_qty") or 0)
+        # Use the segment from the highest-revenue row
+        if float(r.get("total_revenue") or 0) > customer_pivot[cust].get("_max_rev", 0):
+            customer_pivot[cust]["segment"]  = r.get("segment_category", "")
+            customer_pivot[cust]["_max_rev"] = float(r.get("total_revenue") or 0)
+    result_rows = []
+    for cust, data in customer_pivot.items():
+        total = sum(data["cells"].get(m, {}).get("revenue", 0) for m in all_months)
+        result_rows.append({
+            "customer_name": cust,
+            "segment":       data["segment"],
+            "category":      data["category"],
+            "cells": {
+                m: {
+                    "revenue": round(data["cells"].get(m, {}).get("revenue", 0), 2),
+                    "qty":     data["cells"].get(m, {}).get("qty", 0),
+                }
+                for m in all_months
+            },
+            "total_revenue": round(total, 2),
+            "total_qty":     sum(data["cells"].get(m, {}).get("qty", 0) for m in all_months),
+        })
+    result_rows.sort(key=lambda x: x["total_revenue"], reverse=True)
+    total_count = len(result_rows)
+    start       = (page - 1) * page_size
+    return {
+        "months":      all_months,
+        "rows":        result_rows[start: start + page_size],
+        "total_count": total_count,
+        "page":        page,
+        "page_size":   page_size,
+        "total_pages": max(1, (total_count + page_size - 1) // page_size),
+    }
+
+
+# ── /mis/export/excel ─────────────────────────────────────────────────────────
+# Also switched to materialized views so export is consistent with the UI.
+
+@app.get("/mis/export/excel")
+def mis_export_excel(
+    table:            str = Query("segment"),
+    financial_year:   str = Query(None),
+    month:            str = Query(None),
+    segment_category: str = Query(None),
+    category:         str = Query(None),
+    customer_search:  str = Query(None),
+):
+    import io
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except ImportError:
+        raise HTTPException(status_code=500, detail="openpyxl not installed")
+
+    sb = get_supabase()
+    wb = openpyxl.Workbook()
+    ws = wb.active
+
+    header_fill = PatternFill("solid", fgColor="378ADD")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    bold        = Font(bold=True)
+
+    if table == "segment":
+        q = sb.table("mis_segment_monthly").select(
+            "financial_year, month, segment_category, category, total_revenue"
+        )
+        if financial_year:   q = q.eq("financial_year", financial_year)
+        if month:            q = q.eq("month", month)
+        if segment_category: q = q.eq("segment_category", segment_category)
+        if category:         q = q.eq("category", category)
+        rows = q.execute().data
+
+        all_months = sorted(
+            {r["month"] for r in rows if r.get("month")},
+            key=_month_label_sort,
+        )
+        pivot: dict = {}
+        for r in rows:
+            seg = r.get("segment_category") or "Unknown"
+            mon = r.get("month", "")
+            if seg not in pivot:
+                pivot[seg] = {}
+            pivot[seg][mon] = pivot[seg].get(mon, 0) + float(r.get("total_revenue") or 0)
+
+        ws.title = "Segment Revenue"
+        ws.append(["Segment"] + all_months + ["Total"])
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+
+        ordered = [s for s in SEGMENT_ORDER if s in pivot] + \
+                  [s for s in pivot if s not in SEGMENT_ORDER]
+        for seg in ordered:
+            vals = [pivot.get(seg, {}).get(m, 0) for m in all_months]
+            ws.append([seg] + vals + [sum(vals)])
+
+        grand = [sum(pivot.get(s, {}).get(m, 0) for s in ordered) for m in all_months]
+        ws.append(["Grand Total"] + grand + [sum(grand)])
+        for cell in ws[ws.max_row]:
+            cell.font = bold
+
+        filename = f"MIS_Segment_{financial_year or 'all'}.xlsx"
+
+    else:  # customer table
+        q = sb.table("mis_customer_monthly").select(
+            "financial_year, month, customer_name, segment_category, total_revenue"
+        )
+        if financial_year:   q = q.eq("financial_year", financial_year)
+        if month:            q = q.eq("month", month)
+        if segment_category: q = q.eq("segment_category", segment_category)
+        if category:         q = q.eq("category", category)
+        if customer_search:  q = q.ilike("customer_name", f"%{customer_search}%")
+        rows = q.limit(10000).execute().data
+
+        all_months = sorted(
+            {r["month"] for r in rows if r.get("month")},
+            key=_month_label_sort,
+        )
+        pivot = {}
+        for r in rows:
+            c   = r.get("customer_name") or "Unknown"
+            mon = r.get("month", "")
+            if c not in pivot:
+                pivot[c] = {}
+            pivot[c][mon] = pivot[c].get(mon, 0) + float(r.get("total_revenue") or 0)
+
+        ws.title = "Customer Revenue"
+        ws.append(["Customer"] + all_months + ["Total"])
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal="center")
+
+        for cust in sorted(pivot, key=lambda c: sum(pivot[c].values()), reverse=True):
+            vals = [pivot[cust].get(m, 0) for m in all_months]
+            ws.append([cust] + vals + [sum(vals)])
+
+        filename = f"MIS_Customer_{financial_year or 'all'}.xlsx"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return Response(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+# ── /mis/sync ─────────────────────────────────────────────────────────────────
+
+@app.post("/mis/sync")
+def mis_trigger_sync():
+    """
+    Triggers manual MIS sync via Apps Script web app URL (fire-and-forget).
+    Frontend polls /mis/sync/status to check progress.
+    """
+    import urllib.request
+    import json as _json
+    import threading
+
+    script_url = os.getenv("MIS_APPS_SCRIPT_URL", "")
+    if not script_url:
+        raise HTTPException(status_code=503, detail="MIS_APPS_SCRIPT_URL not set in .env")
+
+    def _fire():
+        try:
+            req = urllib.request.Request(
+                script_url,
+                data=_json.dumps({"action": "sync"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=300) as resp:
+                body = resp.read().decode()
+            print(f"[MIS SYNC] Apps Script responded: {body[:200]}")
+        except Exception as e:
+            print(f"[MIS SYNC] Error calling Apps Script: {e}")
+
+    t = threading.Thread(target=_fire, daemon=True)
+    t.start()
+
+    return {"ok": True, "message": "Sync triggered — running in background. Poll /mis/sync/status to check progress."}
+
+
+# ── /mis/sync/status ──────────────────────────────────────────────────────────
+
+@app.get("/mis/sync/status")
+def mis_sync_status():
+    """Returns latest sync log entry."""
+    sb   = get_supabase()
+    rows = sb.table("mis_sync_log").select("*").order("started_at", desc=True).limit(1).execute().data
+    if not rows:
+        return {"status": "never_synced", "last_sync": None}
+    r = rows[0]
+    return {
+        "status":        r.get("status"),
+        "rows_inserted": r.get("rows_inserted", 0),
+        "rows_skipped":  r.get("rows_skipped", 0),
+        "started_at":    r.get("started_at"),
+        "completed_at":  r.get("completed_at"),
+        "financial_year": r.get("financial_year"),
+        "error_message": r.get("error_message"),
     }

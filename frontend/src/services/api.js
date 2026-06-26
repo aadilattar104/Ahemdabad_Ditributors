@@ -132,3 +132,9 @@ export async function sendChatMessage(question, context = {}) {
     body: JSON.stringify({ question, context }),
   });
 }
+export async function getMisFilters()                  { return request("/mis/filters"); }
+export async function getMisSegmentTable(params = {})  { return request(`/mis/segment-table${qs(params)}`); }
+export async function getMisCustomerTable(params = {}) { return request(`/mis/customer-table${qs(params)}`); }
+export function getMisExportUrl(params = {}) {
+  return `${BASE_URL}/mis/export/excel${qs(params)}`;
+}
