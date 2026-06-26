@@ -8,16 +8,19 @@ import Projections from "./pages/Projections";
 import SkuNormalisation from "./pages/SkuNormalisation";
 import Chat from "./pages/Chat";
 import { getDistributors, getSkuCanonical } from "./services/api";
+import MIS from "./pages/MIS";
+
 
 const NAV = [
-  { key: "dashboard",      label: "Secondary Sales Distributor Dashboard", icon: "chart-bar" },
-  { key: "modern-trade",   label: "Modern Trade",          icon: "building-store" },
-  { key: "projections",    label: "Projections",           icon: "chart-line" },
-  { key: "normalisation",  label: "SKU Normalisation",     icon: "hierarchy" },
-  { key: "chat",           label: "Ask a Question",        icon: "message-dots" },
-  { key: "upload",         label: "Upload file",           icon: "upload" },
-  { key: "upload-history", label: "Upload history",        icon: "history" },
-  { key: "settings",       label: "Settings",              icon: "settings" },
+  { key: "mis", label: "Primary Sales MIS", icon: "report-analytics" },
+  //{ key: "dashboard",      label: "Secondary Sales Distributor Dashboard", icon: "chart-bar" },
+  //{ key: "modern-trade",   label: "Modern Trade",          icon: "building-store" },
+  //{ key: "projections",    label: "Projections",           icon: "chart-line" },
+  //{ key: "normalisation",  label: "SKU Normalisation",     icon: "hierarchy" },
+  //{ key: "chat",           label: "Ask a Question",        icon: "message-dots" },
+  //{ key: "upload",         label: "Upload file",           icon: "upload" },
+  //{ key: "upload-history", label: "Upload history",        icon: "history" },
+  //{ key: "settings",       label: "Settings",              icon: "settings" },
 ];
 
 function NavItem({ item, active, onClick }) {
@@ -115,6 +118,7 @@ export default function App() {
             onDistributorsChange={refreshDistributors}
           />
         )}
+        {page === "mis" && <MIS />}
         {page === "modern-trade"    && <ModernTradeAnalytics />}
         {page === "projections"     && <Projections />}
         {page === "upload"          && <Upload onUploadSuccess={refreshDistributors} />}
