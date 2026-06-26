@@ -41,6 +41,79 @@ def _get_groq_key() -> str:
 
 
 # ─────────────────────────────────────────────────────────────
+# RUNTIME DB LOOKUPS
+# ─────────────────────────────────────────────────────────────
+
+import functools
+
+@functools.lru_cache(maxsize=1)
+def _get_actual_distributor_names() -> str:
+    """
+    Fetch exact distributor_name values from DB once per process lifetime.
+    Injected into the SQL prompt so the LLM always sees real spellings.
+    Falls back to hardcoded list if DB call fails.
+    """
+    try:
+        sb = get_supabase()
+        rows = sb.table("distributors").select("distributor_name").execute().data
+        if rows:
+            # Preserve exact DB casing — this is what the LLM must use in SQL
+            names = sorted({r["distributor_name"] for r in rows if r.get("distributor_name")})
+            return ", ".join(f'"{n}"' for n in names)
+    except Exception as e:
+        print(f"[CHAT] Could not fetch distributor names: {e}")
+    return '"SYNERGY", "ICELAND", "Vidhaata", "SANGEETA", "UNIVERSAL"'  
+
+
+def _resolve_distributor_name(raw: str) -> str:
+    """
+    Resolve a user-typed distributor name to the exact DB value including exact casing.
+    e.g. "vidhata" → "Vidhaata", "SYNERGY" → "SYNERGY"
+
+    All comparisons are case-insensitive but the RETURN VALUE is the exact DB string.
+    This is critical — SQL WHERE clauses are case-sensitive in PostgreSQL by default.
+
+    Three-level resolution:
+      1. Case-insensitive exact match  → return exact DB value
+      2. Substring match               → return exact DB value
+      3. Character similarity ≥ 0.7    → return exact DB value
+    Falls back to raw.strip() if nothing matches.
+    """
+    if not raw:
+        return raw
+    raw_norm = raw.upper().strip()
+    try:
+        sb = get_supabase()
+        rows = sb.table("distributors").select("distributor_name").execute().data
+        # Keep original casing — this is what goes into the SQL WHERE clause
+        db_names = [r["distributor_name"] for r in rows if r.get("distributor_name")]
+
+        # Level 1: case-insensitive exact match
+        for n in db_names:
+            if n.upper() == raw_norm:
+                print(f"[RESOLVE exact] '{raw}' → '{n}'")
+                return n
+
+        # Level 2: substring (case-insensitive)
+        matches = [n for n in db_names if raw_norm in n.upper() or n.upper() in raw_norm]
+        if len(matches) == 1:
+            print(f"[RESOLVE substr] '{raw}' → '{matches[0]}'")
+            return matches[0]
+
+        # Level 3: character similarity
+        def similarity(a, b):
+            return sum(c in b for c in a) / max(len(a), 1)
+
+        scored = sorted(db_names, key=lambda n: similarity(raw_norm, n.upper()), reverse=True)
+        if scored and similarity(raw_norm, scored[0].upper()) > 0.7:
+            print(f"[RESOLVE fuzzy] '{raw}' → '{scored[0]}'")
+            return scored[0]
+    except Exception as e:
+        print(f"[RESOLVE] Error: {e}")
+    return raw.strip()
+
+
+# ─────────────────────────────────────────────────────────────
 # DATABASE SCHEMA CONTEXT
 # ─────────────────────────────────────────────────────────────
 
@@ -53,7 +126,7 @@ The business sells snack products (Khakhara, Namkeen) through distributors and m
 TABLE: sales_records   <-- USE THIS for distributor/secondary sales questions
   id               uuid
   upload_id        uuid
-  distributor_name text      -- e.g. "SYNERGY", "ICELAND", "VIDHATA", "SANGEETA", "UNIVERSAL"
+  distributor_name text      -- e.g. "SYNERGY", "ICELAND", "Vidhaata", "SANGEETA", "UNIVERSAL"
   shop_name        text      -- retail shop / party name e.g. "FALGUNI GRUH UDHYOG"
   shop_type        text      -- "REGULAR" or "CASH_SALE"
   sku_name         text      -- raw product name e.g. "SVASTHYA CHANA JOR 210G MRP 180/-"
@@ -116,7 +189,7 @@ TABLE: shop_margins   <-- USE THIS for margin/profitability questions
 
 TABLE: distributors   <-- USE THIS to list available distributors
   id               uuid
-  distributor_name text      -- e.g. "SYNERGY", "ICELAND", "VIDHATA"
+  distributor_name text      -- e.g. "SYNERGY", "ICELAND", "Vidhaata"
   status           text      -- "ACTIVE" or "INACTIVE"
   replaced_by      text
   created_at       timestamptz
@@ -145,7 +218,7 @@ TABLE: mt_uploads   <-- USE THIS for modern trade upload history
 === ROUTING RULES ===
 
 When the user asks about:
-- "distributors", "shops", "secondary sales", "Synergy", "Iceland", "Vidhata", "Sangeeta", "Universal"
+- "distributors", "shops", "secondary sales", "Synergy", "Iceland", "Vidhaata", "Sangeeta", "Universal"
   → USE sales_records
 
 - "modern trade", "MT", "Reliance", "Firstclub", "chain stores", "stores"
@@ -600,18 +673,26 @@ def _build_sql_prompt(question: str, context: dict):
     Structure (Fix 1 — CRITICAL RULES first):
       1. CRITICAL RULES block (fan-out prevention, LATERAL/EXISTS, NULLIF, both revenue+qty,
          month-without-year guard, shop_margins DISTINCT ON)
-      2. DB_SCHEMA block
+      2. DB_SCHEMA block (with real distributor names injected from DB)
       3. FEW_SHOT_EXAMPLES block
       4. MANDATORY FILTERS block (hard WHERE conditions from active context)
     """
     today_str = date.today().strftime('%B %d, %Y')
+
+    # Inject actual distributor names from DB so LLM never guesses spellings
+    actual_names = _get_actual_distributor_names()
+    schema = DB_SCHEMA.replace(
+        'distributor_name text      -- EXACT VALUES FROM DATABASE: {distributor_names_placeholder}',
+        f'distributor_name text      -- EXACT DB VALUES (use these exactly): {actual_names}'
+    ) if '{distributor_names_placeholder}' in DB_SCHEMA else DB_SCHEMA
 
     # Build MANDATORY FILTERS block from active context (Fix 3 — hard enforcement)
     mandatory_filters_block = ""
     if context:
         filter_lines = []
         if context.get("distributor"):
-            filter_lines.append(f"  - distributor_name = '{context['distributor'].upper()}'")
+            resolved_dist = _resolve_distributor_name(context["distributor"])
+            filter_lines.append(f"  - distributor_name = '{resolved_dist}'")
         if context.get("city"):
             filter_lines.append(f"  - city = '{context['city']}'")
         if context.get("month") and context.get("year"):
@@ -673,7 +754,7 @@ CRITICAL RULES — follow these exactly before writing any SQL:
 11. Only SELECT queries. Never INSERT, UPDATE, DELETE, DROP, TRUNCATE.
 12. Limit results to 20 rows unless asked for more.
 
-{DB_SCHEMA}
+{schema}
 
 {FEW_SHOT_EXAMPLES}
 {mandatory_filters_block}"""
@@ -803,6 +884,49 @@ def _build_answer_prompt(question: str, sql: str, rows, context: dict = None):
 
 
 # ─────────────────────────────────────────────────────────────
+# SQL DISTRIBUTOR CASING FIX
+# ─────────────────────────────────────────────────────────────
+
+def _fix_distributor_casing(sql: str) -> str:
+    """
+    After SQL is generated by the LLM, scan for any distributor_name string literals
+    and replace wrong-cased values with the exact DB casing.
+
+    Problem: LLM generates WHERE distributor_name = 'VIDHAATA' but DB has 'Vidhaata'.
+    This runs regardless of context — fixes LLM-generated SQL directly.
+
+    Strategy: find all single-quoted string values after distributor_name =
+    and replace each with the resolved exact DB value.
+    """
+    try:
+        sb = get_supabase()
+        rows = sb.table("distributors").select("distributor_name").execute().data
+        db_names = [r["distributor_name"] for r in rows if r.get("distributor_name")]
+        # Build case-insensitive lookup: upper → exact
+        db_lookup = {n.upper(): n for n in db_names}
+    except Exception as e:
+        print(f"[CASING FIX] Could not fetch distributors: {e}")
+        return sql
+
+    def replace_match(m):
+        quoted_val = m.group(1)
+        exact = db_lookup.get(quoted_val.upper())
+        if exact and exact != quoted_val:
+            print(f"[CASING FIX] '{quoted_val}' → '{exact}'")
+            return f"distributor_name = '{exact}'"
+        return m.group(0)
+
+    # Match distributor_name = 'ANY_VALUE' (with optional spaces around =)
+    fixed = re.sub(
+        r"distributor_name\s*=\s*'([^']+)'",
+        replace_match,
+        sql,
+        flags=re.IGNORECASE
+    )
+    return fixed
+
+
+# ─────────────────────────────────────────────────────────────
 # FILTER INJECTION
 # ─────────────────────────────────────────────────────────────
 
@@ -834,13 +958,15 @@ def _inject_context_filters(sql: str, context: dict) -> str:
     injections = []
 
     if is_distributor:
-        dist  = context.get("distributor", "")
+        dist_raw = context.get("distributor", "")
+        dist  = _resolve_distributor_name(dist_raw) if dist_raw else ""
         city  = context.get("city", "")
         month = context.get("month", "")
         year  = context.get("year", "")
 
-        if dist  and dist.upper() not in sql_upper:
-            injections.append(f"distributor_name = '{dist.upper()}'")
+        # Compare case-insensitively but inject exact resolved casing into SQL
+        if dist and dist.upper() not in sql_upper:
+            injections.append(f"distributor_name = '{dist}'")
         if city  and city.upper() not in sql_upper:
             injections.append(f"city = '{city}'")
         if month and month.upper() not in sql_upper:
@@ -908,42 +1034,47 @@ def _inject_context_filters(sql: str, context: dict) -> str:
 
 def _check_unmapped_skus(sql: str, rows: list) -> str | None:
     """
-    Fix 10: If sku_mappings is referenced in the SQL, run a secondary query counting
-    DISTINCT sku_name values in the relevant sales table that have no mapping.
-    Returns a warning string if unmapped SKUs exist, else None.
+    Only warn about unmapped SKUs when the SQL does NOT already filter via sku_mappings.
+    If the query uses EXISTS/sku_mappings, it is already scoped to mapped SKUs only —
+    firing a global unmapped count is misleading (unrelated SKUs trigger it).
+    Only warn for raw sku_name ILIKE queries where unmapped records could silently
+    be included in the result.
     """
     sql_upper = sql.upper()
-    if "SKU_MAPPINGS" not in sql_upper:
+
+    # If query already uses sku_mappings (EXISTS or LATERAL), it is scoped to mapped
+    # SKUs by construction — a global unmapped count would flag unrelated SKUs.
+    if "SKU_MAPPINGS" in sql_upper:
+        return None
+
+    # Only warn when the query touches sku_name WITHOUT a mapping filter,
+    # meaning unmapped raw SKUs could be silently included in aggregates.
+    if "SKU_NAME" not in sql_upper:
         return None
 
     is_mt = "MT_SALES_RECORDS" in sql_upper
     source_type = "MT" if is_mt else "DISTRIBUTOR"
     sales_table = "mt_sales_records" if is_mt else "sales_records"
 
-    unmapped_sql = f"""
-        SELECT COUNT(DISTINCT sku_name) AS unmapped_count
-        FROM {sales_table}
-        WHERE sku_name NOT IN (
-            SELECT raw_sku FROM sku_mappings WHERE source_type = '{source_type}'
-        )
-    """
+    unmapped_sql = (
+        f"SELECT COUNT(DISTINCT sku_name) AS unmapped_count "
+        f"FROM {sales_table} "
+        f"WHERE sku_name NOT IN ("
+        f"  SELECT raw_sku FROM sku_mappings WHERE source_type = '{source_type}'"
+        f")"
+    )
     try:
         sb = get_supabase()
-        result = sb.rpc("execute_sql", {"query": unmapped_sql.strip()}).execute()
+        result = sb.rpc("execute_sql", {"query": unmapped_sql}).execute()
         if result.data and result.data[0].get("unmapped_count", 0) > 0:
             count = result.data[0]["unmapped_count"]
             return (
-                f"\n\n⚠️ {count} SKU variant{'s' if count > 1 else ''} have no category mapping "
-                f"and are excluded from this total."
+                f"\n\n⚠️ {count} SKU variant{'s' if count > 1 else ''} "
+                f"in the database have no SKU mapping and may be missing from totals."
             )
     except Exception as e:
         print(f"[UNMAPPED SKU CHECK] Error: {e}")
     return None
-
-
-# ─────────────────────────────────────────────────────────────
-# EMPTY RESULT ENRICHMENT
-# ─────────────────────────────────────────────────────────────
 
 def _enrich_empty_result() -> str:
     """
@@ -1057,10 +1188,27 @@ def _resolve_product_ambiguity(question: str) -> dict:
         return {"action": "proceed_total", "question": question}
 
     # Check if a specific variant name is already in the question
+    # Match 1: full canonical name as substring e.g. 'chana jor 35g' in question
+    # Match 2: split tokens — family base + size token both present anywhere in question
+    #   handles 'chana jor units of 35g' or 'paperstories 35g chana jor'
+    import re as _re
+    _size_re = _re.compile(r'\b(\d+\s*g(?:ms?)?)\b')
     for v in variants:
-        if v["name"].lower() in q_lower:
+        vname_lower = v["name"].lower()
+        # Match 1: verbatim
+        if vname_lower in q_lower:
             enriched = question + f" (specifically for: {v['name']})"
             return {"action": "proceed_specific", "question": enriched, "variant": v["name"]}
+        # Match 2: extract size token from canonical name (e.g. '35g', '200g', '72g')
+        #   and check both the family substring AND that size token appear in question
+        size_m = _size_re.search(vname_lower)
+        if size_m:
+            size_tok = size_m.group(1).replace(' ', '')  # '35 g' → '35g'
+            # Build family base: canonical name without the size token
+            family_base = vname_lower[:size_m.start()].strip()
+            if family_base and family_base in q_lower and size_tok in q_lower.replace(' ', ''):
+                enriched = question + f" (specifically for: {v['name']})"
+                return {"action": "proceed_specific", "question": enriched, "variant": v["name"]}
 
     # Ambiguous — need clarification
     options_text = "\n".join(f"- {v['name']} ({v['category']})" for v in variants)
@@ -1111,6 +1259,9 @@ def run_chat_pipeline(question: str, context: dict = None):
         sql_raw = _call_groq(_build_sql_prompt(question, context), temperature=0.0)
         sql = _validate_sql(_extract_sql(sql_raw))
         print("[SQL GENERATED]", sql)
+
+        # Fix casing: replace wrong-cased distributor names in LLM-generated SQL
+        sql = _fix_distributor_casing(sql)
 
         # Fix 5: Fan-out risk check — auto-retry with explicit warning if triggered
         if _check_fanout_risk(sql):

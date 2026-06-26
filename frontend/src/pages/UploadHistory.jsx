@@ -74,7 +74,8 @@ export default function UploadHistory({ onDistributorsChange }) {
 
   const handleRenameConfirm = async () => {
     const newName = renameValue.trim();
-    if (!newName || newName.toUpperCase() === renaming.oldName.toUpperCase()) {
+    if (!newName) { setRenameError("Please enter a new name"); return; }
+    if (newName.toUpperCase() === renaming.oldName.toUpperCase()) {
       setRenaming(null); return;
     }
     setRenameLoading(true); setRenameError("");
@@ -195,66 +196,126 @@ export default function UploadHistory({ onDistributorsChange }) {
         </button>
       </div>
 
+      {/* ── Modals — outside tab conditionals so they always render when state is set ── */}
+
+      {/* Distributor rename modal */}
+      {renaming && (
+        <div style={overlayStyle}>
+          <div style={modalStyle}>
+            <p style={{ margin: "0 0 4px", fontWeight: 600, fontSize: 15 }}>Rename distributor</p>
+            <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--color-text-secondary)" }}>
+              This will update <strong>all uploads and sales records</strong> named "{renaming.oldName}".
+            </p>
+            <input
+              ref={renameInputRef}
+              type="text"
+              value={renameValue}
+              placeholder={`New name for "${renaming.oldName}"`}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter")  handleRenameConfirm();
+                if (e.key === "Escape") handleRenameCancel();
+              }}
+              style={{ width: "100%", marginBottom: 8, boxSizing: "border-box" }}
+              disabled={renameLoading}
+            />
+            {renameError && <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--color-text-danger)" }}>{renameError}</p>}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={handleRenameCancel} disabled={renameLoading}
+                style={{ fontSize: 13, background: "transparent", border: "0.5px solid var(--color-border-secondary)" }}>
+                Cancel
+              </button>
+              <button onClick={handleRenameConfirm} disabled={renameLoading} style={{ fontSize: 13 }}>
+                {renameLoading ? "Saving…" : "Rename globally"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Distributor delete modal */}
+      {confirmDelete && (
+        <div style={overlayStyle}>
+          <div style={modalStyle}>
+            <p style={{ margin: "0 0 4px", fontWeight: 600, fontSize: 15 }}>Delete upload?</p>
+            <p style={{ margin: "0 0 16px", fontSize: 13, color: "var(--color-text-secondary)" }}>
+              This will permanently delete this upload and all its extracted sales records. This cannot be undone.
+            </p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={handleDeleteCancel} disabled={deleteLoading}
+                style={{ fontSize: 13, background: "transparent", border: "0.5px solid var(--color-border-secondary)" }}>
+                Cancel
+              </button>
+              <button onClick={handleDeleteConfirm} disabled={deleteLoading}
+                style={{ fontSize: 13, background: "var(--color-background-danger, #fee2e2)", color: "var(--color-text-danger, #dc2626)", border: "0.5px solid var(--color-border-danger)" }}>
+                {deleteLoading ? "Deleting…" : "Yes, delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MT rename modal */}
+      {mtRenaming && (
+        <div style={overlayStyle}>
+          <div style={modalStyle}>
+            <p style={{ margin: "0 0 4px", fontWeight: 600, fontSize: 15 }}>Rename MT chain</p>
+            <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--color-text-secondary)" }}>
+              This will update <strong>all MT uploads and sales records</strong> named "{mtRenaming.oldName}".
+            </p>
+            <input
+              ref={mtRenameInputRef}
+              type="text"
+              value={mtRenameValue}
+              placeholder={`New name for "${mtRenaming.oldName}"`}
+              onChange={(e) => setMtRenameValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter")  handleMtRenameConfirm();
+                if (e.key === "Escape") handleMtRenameCancel();
+              }}
+              style={{ width: "100%", marginBottom: 8, boxSizing: "border-box" }}
+              disabled={mtRenameLoading}
+            />
+            {mtRenameError && <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--color-text-danger)" }}>{mtRenameError}</p>}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={handleMtRenameCancel} disabled={mtRenameLoading}
+                style={{ fontSize: 13, background: "transparent", border: "0.5px solid var(--color-border-secondary)" }}>
+                Cancel
+              </button>
+              <button onClick={handleMtRenameConfirm} disabled={mtRenameLoading} style={{ fontSize: 13 }}>
+                {mtRenameLoading ? "Saving…" : "Rename globally"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MT delete modal */}
+      {mtConfirmDelete && (
+        <div style={overlayStyle}>
+          <div style={modalStyle}>
+            <p style={{ margin: "0 0 4px", fontWeight: 600, fontSize: 15 }}>Delete MT upload?</p>
+            <p style={{ margin: "0 0 16px", fontSize: 13, color: "var(--color-text-secondary)" }}>
+              This will permanently delete this MT upload and all its sales and SOH records. This cannot be undone.
+            </p>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setMtConfirmDelete(null)} disabled={mtDeleteLoading}
+                style={{ fontSize: 13, background: "transparent", border: "0.5px solid var(--color-border-secondary)" }}>
+                Cancel
+              </button>
+              <button onClick={handleMtDeleteConfirm} disabled={mtDeleteLoading}
+                style={{ fontSize: 13, background: "var(--color-background-danger, #fee2e2)", color: "var(--color-text-danger, #dc2626)", border: "0.5px solid var(--color-border-danger)" }}>
+                {mtDeleteLoading ? "Deleting…" : "Yes, delete"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── DISTRIBUTOR TAB ── */}
       {tab === "distributor" && (
         <>
           {error && <div style={S.errorBox}><i className="ti ti-circle-x" style={{ fontSize: 14, marginRight: 6 }} />{error}</div>}
-
-          {/* Rename modal */}
-          {renaming && (
-            <div style={overlayStyle}>
-              <div style={modalStyle}>
-                <p style={{ margin: "0 0 4px", fontWeight: 600, fontSize: 15 }}>Rename distributor</p>
-                <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--color-text-secondary)" }}>
-                  This will update <strong>all uploads and sales records</strong> named "{renaming.oldName}".
-                </p>
-                <input
-                  ref={renameInputRef}
-                  type="text"
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter")  handleRenameConfirm();
-                    if (e.key === "Escape") handleRenameCancel();
-                  }}
-                  style={{ width: "100%", marginBottom: 8, boxSizing: "border-box" }}
-                  disabled={renameLoading}
-                />
-                {renameError && <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--color-text-danger)" }}>{renameError}</p>}
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  <button onClick={handleRenameCancel} disabled={renameLoading}
-                    style={{ fontSize: 13, background: "transparent", border: "0.5px solid var(--color-border-secondary)" }}>
-                    Cancel
-                  </button>
-                  <button onClick={handleRenameConfirm} disabled={renameLoading} style={{ fontSize: 13 }}>
-                    {renameLoading ? "Saving…" : "Rename globally"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Delete confirm modal */}
-          {confirmDelete && (
-            <div style={overlayStyle}>
-              <div style={modalStyle}>
-                <p style={{ margin: "0 0 4px", fontWeight: 600, fontSize: 15 }}>Delete upload?</p>
-                <p style={{ margin: "0 0 16px", fontSize: 13, color: "var(--color-text-secondary)" }}>
-                  This will permanently delete this upload and all its extracted sales records. This cannot be undone.
-                </p>
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  <button onClick={handleDeleteCancel} disabled={deleteLoading}
-                    style={{ fontSize: 13, background: "transparent", border: "0.5px solid var(--color-border-secondary)" }}>
-                    Cancel
-                  </button>
-                  <button onClick={handleDeleteConfirm} disabled={deleteLoading}
-                    style={{ fontSize: 13, background: "var(--color-background-danger, #fee2e2)", color: "var(--color-text-danger, #dc2626)", border: "0.5px solid var(--color-border-danger)" }}>
-                    {deleteLoading ? "Deleting…" : "Yes, delete"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
 
           <UploadHistoryTable
             rows={rows}
@@ -269,62 +330,6 @@ export default function UploadHistory({ onDistributorsChange }) {
       {tab === "mt" && (
         <>
           {mtError && <div style={S.errorBox}><i className="ti ti-circle-x" style={{ fontSize: 14, marginRight: 6 }} />{mtError}</div>}
-
-          {/* MT rename modal */}
-          {mtRenaming && (
-            <div style={overlayStyle}>
-              <div style={modalStyle}>
-                <p style={{ margin: "0 0 4px", fontWeight: 600, fontSize: 15 }}>Rename chain</p>
-                <p style={{ margin: "0 0 14px", fontSize: 13, color: "var(--color-text-secondary)" }}>
-                  This will update <strong>all uploads and sales records</strong> named "{mtRenaming.oldName}".
-                </p>
-                <input
-                  ref={mtRenameInputRef}
-                  type="text"
-                  value={mtRenameValue}
-                  onChange={(e) => setMtRenameValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter")  handleMtRenameConfirm();
-                    if (e.key === "Escape") handleMtRenameCancel();
-                  }}
-                  style={{ width: "100%", marginBottom: 8, boxSizing: "border-box" }}
-                  disabled={mtRenameLoading}
-                />
-                {mtRenameError && <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--color-text-danger)" }}>{mtRenameError}</p>}
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  <button onClick={handleMtRenameCancel} disabled={mtRenameLoading}
-                    style={{ fontSize: 13, background: "transparent", border: "0.5px solid var(--color-border-secondary)" }}>
-                    Cancel
-                  </button>
-                  <button onClick={handleMtRenameConfirm} disabled={mtRenameLoading} style={{ fontSize: 13 }}>
-                    {mtRenameLoading ? "Saving…" : "Rename globally"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* MT delete confirm modal */}
-          {mtConfirmDelete && (
-            <div style={overlayStyle}>
-              <div style={modalStyle}>
-                <p style={{ margin: "0 0 4px", fontWeight: 600, fontSize: 15 }}>Delete MT upload?</p>
-                <p style={{ margin: "0 0 16px", fontSize: 13, color: "var(--color-text-secondary)" }}>
-                  This will permanently delete this upload and all its extracted sales and SOH records. This cannot be undone.
-                </p>
-                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-                  <button onClick={handleMtDeleteCancel} disabled={mtDeleteLoading}
-                    style={{ fontSize: 13, background: "transparent", border: "0.5px solid var(--color-border-secondary)" }}>
-                    Cancel
-                  </button>
-                  <button onClick={handleMtDeleteConfirm} disabled={mtDeleteLoading}
-                    style={{ fontSize: 13, background: "var(--color-background-danger, #fee2e2)", color: "var(--color-text-danger, #dc2626)", border: "0.5px solid var(--color-border-danger)" }}>
-                    {mtDeleteLoading ? "Deleting…" : "Yes, delete"}
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
 
           <MtUploadHistoryTable
             rows={mtRows}

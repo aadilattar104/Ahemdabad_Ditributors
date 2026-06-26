@@ -104,6 +104,34 @@ def _norm_sku_mt(name: str | None, aliases: dict) -> str:
     return aliases.get(raw, raw)
 
 
+
+def _apply_multi_filter(query, field, value):
+    """Apply .eq() for single value, .in_() for comma-separated multiple values."""
+    if not value:
+        return query
+    vals = [v.strip() for v in str(value).split(",") if v.strip()]
+    if not vals:
+        return query
+    if len(vals) == 1:
+        return query.eq(field, vals[0])
+    return query.in_(field, vals)
+
+
+def _apply_year_filter(query, year):
+    """Same as _apply_multi_filter but casts values to int."""
+    if not year:
+        return query
+    vals = [v.strip() for v in str(year).split(",") if v.strip()]
+    if not vals:
+        return query
+    try:
+        int_vals = [int(v) for v in vals]
+    except ValueError:
+        return query
+    if len(int_vals) == 1:
+        return query.eq("year", int_vals[0])
+    return query.in_("year", int_vals)
+
 def _month_order(month: str | None) -> int:
     if not month:
         return 99
@@ -157,10 +185,10 @@ def get_overview(month=None, year=None, distributor=None, sku=None, city=None, c
     cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, shop_name, qty, revenue")
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if distributor: query = query.eq("distributor_name", distributor)
-    if city:        query = query.eq("city", city)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)
     rows = _fetch_all(query)
 
@@ -203,10 +231,10 @@ def get_shops(month=None, year=None, distributor=None, sku=None, city=None, cate
     query = sb.table("sales_records").select(
         "distributor_name, shop_name, shop_type, qty, revenue, month, year, bill_no"
     )
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if distributor: query = query.eq("distributor_name", distributor)
-    if city:        query = query.eq("city", city)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)
     rows = _fetch_all(query)
 
@@ -241,10 +269,10 @@ def get_mom_trend(distributor=None, sku=None, month=None, year=None, city=None, 
     cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select("distributor_name, month, year, qty, revenue")
-    if distributor: query = query.eq("distributor_name", distributor)
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if city:        query = query.eq("city", city)
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)
     rows = _fetch_all(query)
 
@@ -301,10 +329,10 @@ def get_recurring_shops(month=None, year=None, distributor=None, sku=None, city=
     query = sb.table("sales_records").select(
         "distributor_name, shop_name, sku_name, bill_no, bill_date, qty, revenue"
     )
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if distributor: query = query.eq("distributor_name", distributor)
-    if city:        query = query.eq("city", city)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
     rows = _fetch_all(query)
 
@@ -327,10 +355,10 @@ def get_top_shops_sku_breakdown(month=None, year=None, distributor=None, sku=Non
     cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
     query = sb.table("sales_records").select("shop_name, sku_name, qty, revenue")
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if distributor: query = query.eq("distributor_name", distributor)
-    if city:        query = query.eq("city", city)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
     rows = _fetch_all(query)
 
@@ -361,11 +389,11 @@ def get_distributor_mom(distributor=None, sku=None, month=None, year=None, city=
     aliases, reverse = _load_sku_maps("DISTRIBUTOR")   # load ONCE
     cat_skus = _get_raw_skus_for_category(category) if (category and not sku) else []
     sb = get_supabase()
-    query = sb.table("sales_records").select("distributor_name, month, year, qty, revenue")
-    if distributor: query = query.eq("distributor_name", distributor)
-    if month:       query = query.eq("month", month)
-    if year:        query = query.eq("year", year)
-    if city:        query = query.eq("city", city)
+    query = sb.table("sales_records").select("distributor_name, shop_name, month, year, qty, revenue")
+    query = _apply_multi_filter(query, "distributor_name", distributor)
+    query = _apply_multi_filter(query, "month", month)
+    query = _apply_year_filter(query, year)
+    query = _apply_multi_filter(query, "city", city)
     query = _apply_sku_filter(query, sku, reverse, cat_skus)      # pass reverse — no extra DB call
     rows = _fetch_all(query)
 
@@ -379,13 +407,17 @@ def get_distributor_mom(distributor=None, sku=None, month=None, year=None, city=
                 "year":    r["year"],
                 "revenue": 0.0,
                 "qty":     0,
+                "shops":   set(),
             }
         agg[key]["revenue"] += r["revenue"]
         agg[key]["qty"]     += r["qty"]
+        if r.get("shop_name"):
+            agg[key]["shops"].add(r["shop_name"].upper().strip())
 
     result = list(agg.values())
     for r in result:
-        r["revenue"] = round(r["revenue"], 2)
+        r["revenue"]    = round(r["revenue"], 2)
+        r["shop_count"] = len(r.pop("shops"))
     return sorted(result, key=lambda x: (x["year"] or 0, _month_order(x["month"]), x["distributor_name"]))
 
 
@@ -561,3 +593,206 @@ def get_cities() -> list[str]:
     sb = get_supabase()
     rows = _fetch_all(sb.table("sales_records").select("city"))
     return sorted({r["city"] for r in rows if r.get("city")})
+
+
+# ---------------------------------------------------------------------------
+# Shop Activity Matrix
+# ---------------------------------------------------------------------------
+
+_MONTH_NUM = {m: i + 1 for i, m in enumerate(MONTH_ORDER)}
+
+
+def _month_key(year, month) -> tuple:
+    """Sortable (year, month_index) key."""
+    return (year or 0, _MONTH_NUM.get(month, 0))
+
+
+def _month_label(year, month) -> str:
+    return f"{month} {year}"
+
+
+def get_shop_activity_matrix(distributor: str, city: str | None = None, year: int | None = None, category: str | None = None, sku: str | None = None, grammage: str | None = None) -> dict:
+    """
+    Build a shop × month pivot table for the given distributor.
+
+    Cell status rules:
+      ACTIVE   — revenue > 0
+      GAP      — revenue = 0 AND month is within the shop's first→last active month range
+      INACTIVE — revenue = 0 AND month is outside the shop's active range
+
+    Shop classification (priority order):
+      is_new      → True when the shop's first active month is within the last 2
+                    months of the global data range
+      Has Gaps    → is_new=False AND gap_months > 0
+      Consistent  → is_new=False AND is_lapsed=False AND gap_months=0 AND active_months >= 3
+                    (actively ordering in latest month, no gaps, established)
+      (none)      → established but sparse OR lapsed; appears only under "All" filter
+
+    sku — optional canonical SKU name (e.g. "Chana Jor 72g"). Restricts to shops
+          that bought this specific SKU, expanded to all raw variants via
+          _load_sku_maps(). Takes precedence over category if both are passed.
+    """
+    sb = get_supabase()
+    query = (
+        sb.table("sales_records")
+        .select("shop_name, month, year, revenue, sku_name")
+        .eq("distributor_name", distributor)
+    )
+    if city:
+        query = query.eq("city", city)
+    # NOTE: year filter intentionally omitted — the matrix shows the full cross-year
+    # activity timeline for each shop. Filtering by year would cut off shops whose
+    # history spans multiple years (e.g. Oct 2025 → May 2026).
+
+    if sku:
+        # Specific SKU filter takes precedence — expand canonical name to raw variants
+        _, reverse = _load_sku_maps("DISTRIBUTOR")
+        raw_names = reverse.get(sku)
+        if raw_names:
+            query = query.in_("sku_name", raw_names)
+        else:
+            query = query.eq("sku_name", sku)
+    elif category:
+        cat_skus = _get_raw_skus_for_category(category)
+        if cat_skus:
+            query = query.in_("sku_name", cat_skus)
+        else:
+            return {"months": [], "shops": [], "data_range_months": []}
+
+    rows = _fetch_all(query)
+
+    # ── Grammage filter — DB-driven via canonical SKU names ─────────────────
+    # Looks up canonical SKUs whose name ends with the grammage suffix,
+    # expands them to raw SKU names via sku_mappings, then filters rows.
+    # This is reliable regardless of distributor SKU naming conventions.
+    if grammage and not sku:  # skip if a specific SKU is already selected
+        GRAMMAGE_SUFFIX = {
+            "72g":  "72g",
+            "200g": ["200g", "185g"],
+        }
+        suffixes = GRAMMAGE_SUFFIX.get(grammage)
+        if suffixes:
+            if isinstance(suffixes, str):
+                suffixes = [suffixes]
+            try:
+                # Step 1: find canonical IDs whose name ends with any suffix
+                all_canonicals = (
+                    sb.table("sku_canonical")
+                    .select("id, name")
+                    .execute()
+                    .data or []
+                )
+                matched_ids = [
+                    c["id"] for c in all_canonicals
+                    if any(c.get("name", "").lower().endswith(s) for s in suffixes)
+                ]
+                # Step 2: expand to raw SKU names via sku_mappings
+                if matched_ids:
+                    mappings = (
+                        sb.table("sku_mappings")
+                        .select("raw_sku")
+                        .in_("canonical_id", matched_ids)
+                        .eq("source_type", "DISTRIBUTOR")
+                        .execute()
+                        .data or []
+                    )
+                    raw_set = {m["raw_sku"] for m in mappings if m.get("raw_sku")}
+                    rows = [r for r in rows if r.get("sku_name") in raw_set]
+                else:
+                    rows = []
+            except Exception as e:
+                print(f"[GRAMMAGE] Warning: DB lookup failed — {e}")
+
+    if not rows:
+        return {"months": [], "shops": [], "data_range_months": []}
+
+    # ── Aggregate revenue per (shop, month, year) ────────────────────────────
+    cell_rev: dict[tuple, float] = {}   # (shop, year, month) → revenue
+    for r in rows:
+        shop = (r.get("shop_name") or "").strip()
+        mo   = r.get("month")
+        yr   = r.get("year")
+        rev  = r.get("revenue") or 0.0
+        if not shop or not mo or not yr:
+            continue
+        k = (shop, yr, mo)
+        cell_rev[k] = cell_rev.get(k, 0.0) + rev
+
+    # ── Build global sorted month list ───────────────────────────────────────
+    all_ym: set[tuple] = set()
+    for (shop, yr, mo) in cell_rev:
+        all_ym.add((yr, mo))
+    sorted_ym = sorted(all_ym, key=lambda x: _month_key(x[0], x[1]))
+    global_months = [_month_label(yr, mo) for yr, mo in sorted_ym]   # e.g. ["April 2026", "May 2026"]
+
+    # Last 2 months of global range define the "new shop" threshold
+    new_threshold_keys = {sorted_ym[-1], sorted_ym[-2]} if len(sorted_ym) >= 2 else {sorted_ym[-1]}
+
+    # ── Per-shop first/last active month ─────────────────────────────────────
+    shop_names = sorted({k[0] for k in cell_rev})
+    shop_active: dict[str, list[tuple]] = {s: [] for s in shop_names}
+    for (shop, yr, mo), rev in cell_rev.items():
+        if rev > 0:
+            shop_active[shop].append((yr, mo))
+
+    # ── Build shop rows ───────────────────────────────────────────────────────
+    shops_out = []
+    for shop in shop_names:
+        active_ym = shop_active[shop]
+        if not active_ym:
+            continue  # never had revenue — skip entirely
+
+        first_ym = min(active_ym, key=lambda x: _month_key(x[0], x[1]))
+        last_ym  = max(active_ym, key=lambda x: _month_key(x[0], x[1]))
+
+        cells = []
+        active_count = 0
+        gap_count    = 0
+        total_rev    = 0.0
+
+        for yr, mo in sorted_ym:
+            rev    = cell_rev.get((shop, yr, mo), 0.0)
+            mk     = _month_key(yr, mo)
+            first_k = _month_key(first_ym[0], first_ym[1])
+            last_k  = _month_key(last_ym[0],  last_ym[1])
+
+            if rev > 0:
+                status = "ACTIVE"
+                active_count += 1
+                total_rev    += rev
+            elif first_k <= mk <= last_k:
+                status = "GAP"
+                gap_count += 1
+            else:
+                status = "INACTIVE"
+
+            cells.append({
+                "month":   _month_label(yr, mo),
+                "revenue": round(rev, 2),
+                "status":  status,
+            })
+
+        is_new    = first_ym in new_threshold_keys
+        # is_lapsed: shop's last active month is NOT the latest global month.
+        # A lapsed shop stopped ordering — it must NOT be classified as Consistent
+        # even if it has no gap cells (those trailing months are INACTIVE, not GAP).
+        is_lapsed = last_ym != sorted_ym[-1]
+
+        shops_out.append({
+            "shop_name":     shop,
+            "cells":         cells,
+            "total_revenue": round(total_rev, 2),
+            "active_months": active_count,
+            "gap_months":    gap_count,
+            "is_new":        is_new,
+            "is_lapsed":     is_lapsed,
+        })
+
+    # Sort shops by total revenue descending
+    shops_out.sort(key=lambda x: x["total_revenue"], reverse=True)
+
+    return {
+        "months":            global_months,
+        "shops":             shops_out,
+        "data_range_months": global_months,
+    }

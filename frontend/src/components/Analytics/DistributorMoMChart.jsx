@@ -52,6 +52,7 @@ function CustomTooltip({ active, payload, label }) {
             <div style={{ paddingLeft: 14, color: "var(--color-text-secondary)", display: "flex", flexDirection: "column", gap: 1 }}>
               <span>Revenue: <strong style={{ color: "var(--color-text-primary)" }}>{fmtRev(p.value)}</strong></span>
               <span>Qty sold: <strong style={{ color: "var(--color-text-primary)" }}>{qty.toLocaleString()} units</strong></span>
+              <span>Shops served: <strong style={{ color: "var(--color-text-primary)" }}>{(p.payload[distName + "__shops"] ?? 0).toLocaleString()}</strong></span>
             </div>
           </div>
         );
@@ -60,12 +61,32 @@ function CustomTooltip({ active, payload, label }) {
   );
 }
 
-function DataLabel({ x, y, width, value }) {
+function DataLabel({ x, y, width, value, vertical }) {
   if (!value) return null;
+  const cx = x + width / 2;
+  if (vertical) {
+    // Rotated label — grows upward from 4px above bar top
+    const pivotY = y - 4;
+    return (
+      <text
+        x={cx}
+        y={pivotY}
+        textAnchor="start"
+        dominantBaseline="central"
+        fontSize={11}
+        fontWeight={600}
+        fill="var(--color-text-secondary)"
+        transform={`rotate(-90, ${cx}, ${pivotY})`}
+      >
+        {fmtRev(value)}
+      </text>
+    );
+  }
+  // Horizontal — single line, 6px gap above bar
   return (
     <text
-      x={x + width / 2}
-      y={y - 4}
+      x={cx}
+      y={y - 6}
       textAnchor="middle"
       fontSize={11}
       fontWeight={600}
@@ -76,7 +97,7 @@ function DataLabel({ x, y, width, value }) {
   );
 }
 
-export default function DistributorMoMChart({ data = [], loading = false }) {
+export default function DistributorMoMChart({ data = [], loading = false, selectedDistributor = null }) {
   if (loading) {
     return (
       <div style={cardStyle}>
@@ -100,6 +121,7 @@ export default function DistributorMoMChart({ data = [], loading = false }) {
     "July","August","September","October","November","December"];
 
   const distributors = [...new Set(data.map(r => r.distributor_name))].sort();
+  const useVertical = distributors.length > 1;  // horizontal when 1 distributor, vertical when 2+
 
   // Build pivot: { monthLabel → { dist__rev, dist__qty, ... } }
   const pivotMap = {};
@@ -107,8 +129,9 @@ export default function DistributorMoMChart({ data = [], loading = false }) {
     const label = `${r.month?.slice(0, 3)} ${String(r.year).slice(2)}`;
     const sortKey = (r.year ?? 0) * 100 + (MONTH_ORDER.indexOf(r.month) + 1);
     if (!pivotMap[label]) pivotMap[label] = { label, _sort: sortKey };
-    pivotMap[label][`${r.distributor_name}__rev`] = (pivotMap[label][`${r.distributor_name}__rev`] || 0) + r.revenue;
-    pivotMap[label][`${r.distributor_name}__qty`] = (pivotMap[label][`${r.distributor_name}__qty`] || 0) + r.qty;
+    pivotMap[label][`${r.distributor_name}__rev`]   = (pivotMap[label][`${r.distributor_name}__rev`] || 0) + r.revenue;
+    pivotMap[label][`${r.distributor_name}__qty`]   = (pivotMap[label][`${r.distributor_name}__qty`] || 0) + r.qty;
+    pivotMap[label][`${r.distributor_name}__shops`] = (pivotMap[label][`${r.distributor_name}__shops`] || 0) + (r.shop_count || 0);
   });
 
   const chartData = Object.values(pivotMap).sort((a, b) => a._sort - b._sort);
@@ -129,7 +152,7 @@ export default function DistributorMoMChart({ data = [], loading = false }) {
       </div>
 
       <ResponsiveContainer width="100%" height={320}>
-        <BarChart data={chartData} margin={{ top: 24, right: 12, left: 0, bottom: 8 }} barCategoryGap="25%" barGap={4}>
+        <BarChart data={chartData} margin={{ top: useVertical ? 64 : 28, right: 12, left: 0, bottom: 8 }} barCategoryGap="25%" barGap={4}>
           <CartesianGrid vertical={false} stroke="var(--color-border-tertiary)" strokeDasharray="4 4" />
           <XAxis
             dataKey="label"
@@ -155,7 +178,7 @@ export default function DistributorMoMChart({ data = [], loading = false }) {
               radius={[4, 4, 0, 0]}
               barSize={28}
             >
-              <LabelList dataKey={`${dist}__rev`} content={<DataLabel />} />
+              <LabelList dataKey={`${dist}__rev`} content={(props) => <DataLabel {...props} vertical={useVertical} />} />
             </Bar>
           ))}
         </BarChart>

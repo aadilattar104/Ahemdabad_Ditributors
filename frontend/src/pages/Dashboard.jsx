@@ -8,6 +8,7 @@ import MoMTrendChart from "../components/Analytics/MoMTrendChart";
 import DistributorMoMChart from "../components/Analytics/DistributorMoMChart";
 import FilterBar from "../components/Filters/FilterBar";
 import RecurringShopsTable from "../components/RecurringShops/RecurringShopsTable";
+import ShopActivityMatrix from "../components/Analytics/ShopActivityMatrix";
 import {
   getOverview, getShops, getMoMTrend, getTopShops,
   getTopShopsByQty, getRecurringShops, getTopShopsSkuBreakdown,
@@ -19,7 +20,7 @@ import {
 //   skus                — string[]  (from App, always fresh)
 //   onDistributorsChange — () => void  (call App to re-fetch after any mutation)
 export default function Dashboard({ distributors = [], onDistributorsChange }) {
-  const [filters, setFilters]     = useState({ month: "", year: "", distributor: "", sku: "", city: "", category: "" });
+  const [filters, setFilters]     = useState({ month: [], year: [], distributor: [], sku: [], city: [], category: "" });
   const [skus, setSkus]           = useState([]);  // [{ id, name, category, family }]
   const [overview, setOverview]   = useState(null);
   const [shops, setShops]         = useState([]);
@@ -34,10 +35,13 @@ export default function Dashboard({ distributors = [], onDistributorsChange }) {
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState("");
 
-  // If the selected distributor was deleted/renamed, clear it from the filter
+  // If the selected distributors were deleted/renamed, remove stale ones from filter
   useEffect(() => {
-    if (filters.distributor && !distributors.includes(filters.distributor)) {
-      setFilters((prev) => ({ ...prev, distributor: "", category: "" }));
+    if (filters.distributor?.length > 0) {
+      const valid = filters.distributor.filter(d => distributors.includes(d));
+      if (valid.length !== filters.distributor.length) {
+        setFilters(prev => ({ ...prev, distributor: valid, category: "" }));
+      }
     }
   }, [distributors]);
 
@@ -50,8 +54,14 @@ export default function Dashboard({ distributors = [], onDistributorsChange }) {
 
   // Reload analytics when filters change
   useEffect(() => {
-    // Send category to backend — aggregator resolves it to raw SKU names via sku_canonical table
-    const p = Object.fromEntries(Object.entries(filters).filter(([, v]) => v));
+    // Build params — arrays joined as comma-separated strings for backend
+    const p = {};
+    if (filters.month?.length)       p.month       = filters.month.join(",");
+    if (filters.year?.length)        p.year        = filters.year.join(",");
+    if (filters.distributor?.length) p.distributor = filters.distributor.join(",");
+    if (filters.sku?.length)         p.sku         = filters.sku.join(",");
+    if (filters.city?.length)        p.city        = filters.city.join(",");
+    if (filters.category)            p.category    = filters.category;
     setLoading(true);
     setError("");
     Promise.all([
@@ -102,11 +112,16 @@ export default function Dashboard({ distributors = [], onDistributorsChange }) {
         <OverviewCards data={overview} loading={loading} />
 
         {/* ── NEW: Distributor MoM grouped bar chart ── */}
-        <DistributorMoMChart data={distMoM} loading={loading} />
+        <DistributorMoMChart data={distMoM} loading={loading} selectedDistributor={filters.distributor || null} />
 
         <TopShopsChart data={topRev} skuData={skuBreakdown.by_revenue} loading={loading} />
         <TopShopsByQtyChart data={topQty} skuData={skuBreakdown.by_qty} loading={loading} />
         <MoMTrendChart data={trend} loading={loading} />
+        <ShopActivityMatrix
+          distributors={distributors}
+          city={filters.city?.length === 1 ? filters.city[0] : null}
+          year={filters.year?.length === 1 ? filters.year[0] : null}
+        />
         <DistributorTable rows={overview?.by_distributor || []} loading={loading} />
         <ShopTable rows={shops} loading={loading} margins={margins} onMarginsChange={() => getMargins().then(setMargins).catch(() => {})} />
         <RecurringShopsTable rows={recurring} loading={loading} />

@@ -17,7 +17,7 @@ function CustomTooltip({ active, payload }) {
       maxWidth: 320,
     }}>
       <p style={{ margin: "0 0 6px", fontWeight: 500, wordBreak: "break-word" }}>{fullName}</p>
-      {payload.map((p) => (
+      {payload.filter((p) => (p.value || 0) > 0).map((p) => (
         <p key={p.name} style={{ margin: "2px 0", color: "var(--color-text-secondary)", display: "flex", justifyContent: "space-between", gap: 16 }}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
             <span style={{ width: 8, height: 8, borderRadius: 2, background: p.fill, display: "inline-block" }} />

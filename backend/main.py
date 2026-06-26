@@ -13,7 +13,7 @@ from extraction import run_extraction_pipeline
 from analytics.aggregator import (get_cities, get_projection,
     get_overview, get_shops, get_mom_trend, get_top_shops,
     get_top_shops_by_qty, get_skus, get_recurring_shops,
-    get_top_shops_sku_breakdown,
+    get_top_shops_sku_breakdown, get_shop_activity_matrix,
 )
 from exports.exporter import export_to_excel, export_audit_csv
 from analytics.aggregator import get_distributor_mom
@@ -306,7 +306,7 @@ def update_distributor(dist_id: str, body: dict):
 @app.get("/analytics/overview")
 def analytics_overview(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     city: str = Query(None),
@@ -318,7 +318,7 @@ def analytics_overview(
 @app.get("/analytics/shops")
 def analytics_shops(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     city: str = Query(None),
@@ -332,7 +332,7 @@ def analytics_mom_trend(
     distributor: str = Query(None),
     sku: str = Query(None),
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     city: str = Query(None),
     category: str = Query(None),
 ):
@@ -343,7 +343,7 @@ def analytics_distributor_mom(
     distributor: str = Query(None),
     sku: str = Query(None),
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     city: str = Query(None),
     category: str = Query(None),
 ):
@@ -353,7 +353,7 @@ def analytics_distributor_mom(
 @app.get("/analytics/top-shops")
 def analytics_top_shops(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     limit: int = Query(10),
@@ -366,7 +366,7 @@ def analytics_top_shops(
 @app.get("/analytics/top-shops-by-qty")
 def analytics_top_shops_qty(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     limit: int = Query(10),
@@ -389,7 +389,7 @@ def analytics_skus():
 @app.get("/analytics/recurring-shops")
 def analytics_recurring_shops(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     city: str = Query(None),
@@ -401,7 +401,7 @@ def analytics_recurring_shops(
 @app.get("/analytics/top-shops-sku-breakdown")
 def analytics_top_shops_sku_breakdown(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
     sku: str = Query(None),
     limit: int = Query(10),
@@ -499,7 +499,7 @@ async def manual_mapping_confirm(
 @app.get("/export/excel")
 def export_excel(
     month: str = Query(None),
-    year: int = Query(None),
+    year: str = Query(None),
     distributor: str = Query(None),
 ):
     xlsx_bytes = export_to_excel(month=month, year=year, distributor=distributor)
@@ -1028,6 +1028,60 @@ def margins_save_one(body: dict):
 @app.get("/analytics/projection")
 def analytics_projection(distributor: str = Query(None)):
     return get_projection(distributor=distributor)
+
+
+# =============================================================================
+# SHOP BEATS — beat assignment per shop per distributor
+# =============================================================================
+
+@app.get("/shop-beats")
+def get_shop_beats(distributor: str = Query(...)):
+    sb = get_supabase()
+    rows = (
+        sb.table("shop_beats")
+        .select("shop_name, beat")
+        .eq("distributor_name", distributor)
+        .execute()
+        .data
+    )
+    return rows or []
+
+
+@app.post("/shop-beats")
+def upsert_shop_beat(body: dict):
+    sb               = get_supabase()
+    shop_name        = (body.get("shop_name") or "").strip()
+    distributor_name = (body.get("distributor_name") or "").strip()
+    beat             = (body.get("beat") or "").strip()
+
+    if not shop_name or not distributor_name:
+        raise HTTPException(status_code=400, detail="shop_name and distributor_name are required")
+    if not beat:
+        raise HTTPException(status_code=400, detail="beat is required")
+
+    sb.table("shop_beats").upsert(
+        {
+            "shop_name":        shop_name,
+            "distributor_name": distributor_name,
+            "beat":             beat,
+            "updated_at":       "now()",
+        },
+        on_conflict="shop_name,distributor_name",
+    ).execute()
+
+    return {"ok": True, "shop_name": shop_name, "distributor_name": distributor_name, "beat": beat}
+
+
+@app.get("/shop-activity-matrix")
+def shop_activity_matrix(
+    distributor: str = Query(...),
+    city: str        = Query(None),
+    year: int        = Query(None),
+    category: str    = Query(None),
+    sku: str         = Query(None),
+    grammage: str    = Query(None),
+):
+    return get_shop_activity_matrix(distributor=distributor, city=city, year=year, category=category, sku=sku, grammage=grammage)
 
 # =============================================================================
 # PROJECTION REMARKS — global notes (sales drop, shop closed, etc.)

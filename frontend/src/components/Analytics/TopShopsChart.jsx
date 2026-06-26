@@ -33,7 +33,7 @@ function CustomTooltip({ active, payload }) {
       maxWidth: 320,
     }}>
       <p style={{ margin: "0 0 6px", fontWeight: 500, wordBreak: "break-word" }}>{fullName}</p>
-      {payload.map((p) => (
+      {payload.filter((p) => p.value > 0).map((p) => (
         <p key={p.name} style={{ margin: "2px 0", color: "var(--color-text-secondary)", display: "flex", justifyContent: "space-between", gap: 16 }}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
             <span style={{ width: 8, height: 8, borderRadius: 2, background: p.fill, display: "inline-block" }} />
@@ -49,11 +49,18 @@ function CustomTooltip({ active, payload }) {
   );
 }
 
-// Top label rendered above the full stacked bar
+// Top label — single horizontal line above bar with 4px gap
 function TopLabel({ x, y, width, value }) {
   if (!value) return null;
   return (
-    <text x={x + width / 2} y={y - 5} textAnchor="middle" fontSize={13} fontWeight={600} fill="var(--color-text-primary)">
+    <text
+      x={x + width / 2}
+      y={y - 6}
+      textAnchor="middle"
+      fontSize={12}
+      fontWeight={600}
+      fill="var(--color-text-primary)"
+    >
       {fmtRevLabel(value)}
     </text>
   );
@@ -117,7 +124,7 @@ export default function TopShopsChart({ data = [], skuData = [], loading = false
         ? <p style={{ textAlign: "center", color: "var(--color-text-tertiary)", padding: "2rem 0", margin: 0 }}>No data</p>
         : (
           <ResponsiveContainer width="100%" height={380}>
-            <BarChart data={chartData} margin={{ top: 24, right: 12, left: 0, bottom: 70 }}>
+            <BarChart data={chartData} margin={{ top: 28, right: 12, left: 0, bottom: 70 }}>
               <CartesianGrid vertical={false} stroke="var(--color-border-tertiary)" strokeDasharray="4 4" />
               <XAxis
                 dataKey="shortName"
