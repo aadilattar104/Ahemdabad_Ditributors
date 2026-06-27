@@ -4,6 +4,7 @@ import io
 from dotenv import load_dotenv
 load_dotenv()
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from typing import List
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
 from analytics.aggregator import get_projection
@@ -1304,6 +1305,52 @@ async def chat_endpoint(body: dict):
 #      returning only Apr-2026 data.
 # =============================================================================
 
+# ── Customer name aliases — club variants into one canonical name ──────────────
+# Add entries here whenever a customer appears under multiple names in mis_transactions
+# ── Customer name aliasing / clubbing ─────────────────────────────────────────
+# EXACT_ALIASES: keys are lowercased for case-insensitive exact matching.
+EXACT_ALIASES: dict = {
+    # blinkit exact names → canonical
+    "blinkit": "Blinkit",
+    "blinkit india": "Blinkit",
+    "blinkit india pvt ltd": "Blinkit",
+    "blinkit india private limited": "Blinkit",
+    # Add more exact aliases below (lowercase key):
+    # "swiggy instamart pvt ltd": "Swiggy Instamart",
+}
+
+# PREFIX_ALIASES: if the customer name (lowercased) STARTS WITH any of these
+# prefixes, it is mapped to the canonical name.
+# Use this for names like "Blink Commerce Private Limited (MH/GUJ/...)"
+PREFIX_ALIASES: list = [
+    # (prefix_lowercase, canonical_name)
+    ("blink commerce", "Blinkit"),
+    ("blinkit", "Blinkit"),
+    # ("swiggy instamart", "Swiggy Instamart"),
+    # ("zepto", "Zepto"),
+]
+
+def _normalize_customer(name: str) -> str:
+    """Return canonical customer name.
+    1. Exact match (case-insensitive)
+    2. Prefix match (case-insensitive) — catches regional variants like
+       'Blink Commerce Private Limited (MH)', '... (GUJ)' etc.
+    3. Return original name unchanged.
+    """
+    stripped = name.strip()
+    lower = stripped.lower()
+    # Exact match
+    if lower in EXACT_ALIASES:
+        return EXACT_ALIASES[lower]
+    # Prefix match
+    for prefix, canonical in PREFIX_ALIASES:
+        if lower.startswith(prefix):
+            return canonical
+    return stripped
+
+
+# NOTE: The beginning of this list may have been accidentally deleted.
+# Restore any missing segment names before "Sampling" if needed.
 SEGMENT_ORDER = [
     "Sampling", "D2C", "Amazon", "Quickcommerce",
     "Retail-MT", "Retail - MT", "Retail-GT", "Retail - GT",
@@ -1328,7 +1375,6 @@ def _month_label_sort(label: str, fy: str = "") -> int:
 def mis_filters():
     sb = get_supabase()
 
-    # mis_segment_monthly has one row per (fy, month, segment, category) — very small
     rows = sb.table("mis_segment_monthly").select(
         "financial_year, month, month_number, segment_category, category"
     ).execute().data
@@ -1341,11 +1387,16 @@ def mis_filters():
     month_set  = {r["month"] for r in rows if r.get("month")}
     months     = sorted(month_set, key=lambda m: _month_label_sort(m))
 
+    # SKU names — from mis_transactions (distinct, sorted)
+    sku_rows = sb.table("mis_transactions").select("sku_name").execute().data
+    sku_names = sorted({r["sku_name"] for r in sku_rows if r.get("sku_name")})
+
     return {
         "financial_years":    fys,
         "months":             months,
         "segment_categories": segments,
         "categories":         categories,
+        "skus":               sku_names,   # frontend expects "skus" key
     }
 
 
@@ -1355,36 +1406,83 @@ def mis_filters():
 @app.get("/mis/segment-table")
 def mis_segment_table(
     financial_year:   str = Query(None),
-    month:            str = Query(None),
-    segment_category: str = Query(None),
-    category:         str = Query(None),
+    month:            List[str] = Query(default=None),
+    segment_category: List[str] = Query(default=None),
+    category:         List[str] = Query(default=None),
+    sku_name:         str = Query(None),   # legacy
+    sku:              str = Query(None),   # used by frontend
+    grm_filter:       List[str] = Query(default=None),   # repeated grm params e.g. grm_filter=200%20gms&grm_filter=185%20gms
 ):
+    # Merge both param names — frontend sends "sku", legacy uses "sku_name"
+    sku_name = sku_name or sku
     sb = get_supabase()
-    q  = sb.table("mis_segment_monthly").select(
-        "financial_year, month, month_number, segment_category, category, total_revenue, total_qty, order_count"
-    )
-    if financial_year:   q = q.eq("financial_year", financial_year)
-    if month:            q = q.eq("month", month)
-    if segment_category: q = q.eq("segment_category", segment_category)
-    if category:         q = q.eq("category", category)
-    rows = q.execute().data  # view rows are tiny — no limit needed
 
-    all_months = sorted(
-        {r["month"] for r in rows if r.get("month")},
-        key=lambda m: _month_label_sort(m, financial_year or ""),
-    )
+    # Normalise grm values: URLSearchParams.toString() encodes spaces as "+";
+    # Starlette query-string parser does NOT decode "+" as space (only %20),
+    # so we must replace "+" -> " " here. Filter out any empty strings.
+    grm_values = [g.replace("+", " ") for g in (grm_filter or []) if g]
 
-    pivot: dict = {}
-    for r in rows:
-        seg = r.get("segment_category") or "Unknown"
-        mon = r.get("month") or ""
-        if seg not in pivot:
-            pivot[seg] = {}
-        if mon not in pivot[seg]:
-            pivot[seg][mon] = {"revenue": 0.0, "qty": 0, "orders": 0}
-        pivot[seg][mon]["revenue"] += float(r.get("total_revenue") or 0)
-        pivot[seg][mon]["qty"]     += int(r.get("total_qty") or 0)
-        pivot[seg][mon]["orders"]  += int(r.get("order_count") or 0)
+    # When grm_filter or sku_name is active, query mis_transactions directly
+    # (materialized view doesn't have grm/sku_name granularity)
+    if grm_values or sku_name:
+        q = sb.table("mis_transactions").select(
+            "month, month_number, segment_category, category, net_revenue, qty"
+        )
+        if financial_year:   q = q.eq("financial_year", financial_year)
+        if month:            q = q.in_("month", month)
+        if segment_category: q = q.in_("segment_category", segment_category)
+        if category:         q = q.in_("category", category)
+        if grm_values:       q = q.in_("grm", grm_values)
+        raw = []
+        offset = 0
+        batch_size = 1000
+        while True:
+            batch = q.range(offset, offset + batch_size - 1).execute().data
+            raw.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+        # Re-aggregate in Python to match materialized view shape
+        agg: dict = {}
+        for r in raw:
+            seg = r.get("segment_category") or "Unknown"
+            mon = r.get("month") or ""
+            if seg not in agg:
+                agg[seg] = {}
+            if mon not in agg[seg]:
+                agg[seg][mon] = {"revenue": 0.0, "qty": 0, "orders": 0}
+            agg[seg][mon]["revenue"] += float(r.get("net_revenue") or 0)
+            agg[seg][mon]["qty"]     += int(r.get("qty") or 0)
+        rows_source = agg
+        all_months = sorted(
+            {mon for seg_data in agg.values() for mon in seg_data},
+            key=lambda m: _month_label_sort(m, financial_year or ""),
+        )
+        pivot = agg
+    else:
+        q  = sb.table("mis_segment_monthly").select(
+            "financial_year, month, month_number, segment_category, category, total_revenue, total_qty, order_count"
+        )
+        if financial_year:   q = q.eq("financial_year", financial_year)
+        if month:            q = q.in_("month", month)
+        if segment_category: q = q.in_("segment_category", segment_category)
+        if category:         q = q.in_("category", category)
+        rows = q.execute().data
+        all_months = sorted(
+            {r["month"] for r in rows if r.get("month")},
+            key=lambda m: _month_label_sort(m, financial_year or ""),
+        )
+        pivot: dict = {}
+        for r in rows:
+            seg = r.get("segment_category") or "Unknown"
+            mon = r.get("month") or ""
+            if seg not in pivot:
+                pivot[seg] = {}
+            if mon not in pivot[seg]:
+                pivot[seg][mon] = {"revenue": 0.0, "qty": 0, "orders": 0}
+            pivot[seg][mon]["revenue"] += float(r.get("total_revenue") or 0)
+            pivot[seg][mon]["qty"]     += int(r.get("total_qty") or 0)
+            pivot[seg][mon]["orders"]  += int(r.get("order_count") or 0)
 
     ordered = [s for s in SEGMENT_ORDER if s in pivot] + \
               [s for s in pivot if s not in SEGMENT_ORDER]
@@ -1424,41 +1522,86 @@ def mis_segment_table(
 @app.get("/mis/customer-table")
 def mis_customer_table(
     financial_year:   str = Query(None),
-    month:            str = Query(None),
-    segment_category: str = Query(None),
-    category:         str = Query(None),
+    month:            List[str] = Query(default=None),
+    segment_category: List[str] = Query(default=None),
+    category:         List[str] = Query(default=None),
     customer_search:  str = Query(None),
+    sku_name:         str = Query(None),   # legacy
+    sku:              str = Query(None),   # used by frontend
+    grm_filter:       List[str] = Query(default=None),
+    pos:              str = Query(None),
     page:             int = Query(1),
     page_size:        int = Query(50),
 ):
+    # Merge both param names
+    sku_name = sku_name or sku
     sb = get_supabase()
-    # Fetch ALL rows from the materialized view using range pagination
-    # to bypass Supabase's server-side row limit (1000 default)
-    all_rows = []
-    batch_size = 1000
-    offset = 0
-    while True:
-        q = sb.table("mis_customer_monthly").select(
-            "financial_year, month, customer_name, segment_category, category, total_revenue, total_qty"
-        )
+
+    grm_values = [g.replace("+", " ") for g in (grm_filter or []) if g]
+
+    if pos:
+        store_rows = sb.table("store_master").select("shop_name").eq("pos", pos).execute().data
+        gt_shops = {r["shop_name"] for r in store_rows}
+    else:
+        gt_shops = None
+
+    def apply_filters(q):
         if financial_year:   q = q.eq("financial_year", financial_year)
-        if month:            q = q.eq("month", month)
-        if segment_category: q = q.eq("segment_category", segment_category)
-        if category:         q = q.eq("category", category)
+        if month:            q = q.in_("month", month)
+        if segment_category: q = q.in_("segment_category", segment_category)
+        if category:         q = q.in_("category", category)
         if customer_search:  q = q.ilike("customer_name", f"%{customer_search}%")
-        batch = q.range(offset, offset + batch_size - 1).execute().data
-        all_rows.extend(batch)
-        if len(batch) < batch_size:
-            break
-        offset += batch_size
-    rows = all_rows
+        if grm_values:       q = q.in_("grm", grm_values)
+        if sku_name:         q = q.ilike("sku_name", f"%{sku_name}%")
+        return q
+
+    if grm_values or sku_name:
+        all_rows = []
+        offset = 0
+        batch_size = 1000
+        while True:
+            q = sb.table("mis_transactions").select(
+                "financial_year, month, customer_name, segment_category, category, net_revenue, qty"
+            )
+            q = apply_filters(q)
+            batch = q.range(offset, offset + batch_size - 1).execute().data
+            all_rows.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+        rows = all_rows
+    else:
+        all_rows = []
+        offset = 0
+        batch_size = 1000
+        while True:
+            q = sb.table("mis_customer_monthly").select(
+                "financial_year, month, customer_name, segment_category, category, total_revenue, total_qty"
+            )
+            if financial_year:   q = q.eq("financial_year", financial_year)
+            if month:            q = q.in_("month", month)
+            if segment_category: q = q.in_("segment_category", segment_category)
+            if category:         q = q.in_("category", category)
+            if customer_search:  q = q.ilike("customer_name", f"%{customer_search}%")
+            batch = q.range(offset, offset + batch_size - 1).execute().data
+            all_rows.extend(batch)
+            if len(batch) < batch_size:
+                break
+            offset += batch_size
+        rows = all_rows
+
+    # Apply pos filter
+    if gt_shops is not None:
+        rows = [r for r in rows if r.get("customer_name") in gt_shops]
+
     all_months = sorted(
         {r["month"] for r in rows if r.get("month")},
         key=lambda m: _month_label_sort(m, financial_year or ""),
     )
     customer_pivot: dict = {}
     for r in rows:
-        cust = r.get("customer_name") or "Unknown"
+        raw_name = r.get("customer_name") or "Unknown"
+        cust = _normalize_customer(raw_name)
         mon  = r.get("month") or ""
         if cust not in customer_pivot:
             customer_pivot[cust] = {
@@ -1469,12 +1612,21 @@ def mis_customer_table(
         if mon not in customer_pivot[cust]["cells"]:
             customer_pivot[cust]["cells"][mon] = {"revenue": 0.0, "qty": 0}
         # Accumulate — customer can appear in multiple categories in the view
-        customer_pivot[cust]["cells"][mon]["revenue"] += float(r.get("total_revenue") or 0)
-        customer_pivot[cust]["cells"][mon]["qty"]     += int(r.get("total_qty") or 0)
+        # Field names differ: mis_transactions uses net_revenue/qty; view uses total_revenue/total_qty
+        rev = float(r.get("total_revenue") or r.get("net_revenue") or 0)
+        qty = int(r.get("total_qty") or r.get("qty") or 0)
+        customer_pivot[cust]["cells"][mon]["revenue"] += rev
+        customer_pivot[cust]["cells"][mon]["qty"]     += qty
         # Use the segment from the highest-revenue row
-        if float(r.get("total_revenue") or 0) > customer_pivot[cust].get("_max_rev", 0):
+        if rev > customer_pivot[cust].get("_max_rev", 0):
             customer_pivot[cust]["segment"]  = r.get("segment_category", "")
-            customer_pivot[cust]["_max_rev"] = float(r.get("total_revenue") or 0)
+            customer_pivot[cust]["_max_rev"] = rev
+
+    # Shop count = distinct customers in the (possibly pos-filtered) result set.
+    # Computed BEFORE pagination so it always reflects the full filtered set,
+    # not just the current page.
+    shop_count = len(customer_pivot)
+
     result_rows = []
     for cust, data in customer_pivot.items():
         total = sum(data["cells"].get(m, {}).get("revenue", 0) for m in all_months)
@@ -1495,13 +1647,29 @@ def mis_customer_table(
     result_rows.sort(key=lambda x: x["total_revenue"], reverse=True)
     total_count = len(result_rows)
     start       = (page - 1) * page_size
+
+    # Grand totals across ALL customers (not just the current page)
+    grand_total_revenue = round(sum(r["total_revenue"] for r in result_rows), 2)
+    grand_total_qty     = sum(r["total_qty"] for r in result_rows)
+    grand_total_by_month = {
+        m: {
+            "revenue": round(sum(r["cells"].get(m, {}).get("revenue", 0) for r in result_rows), 2),
+            "qty":     sum(r["cells"].get(m, {}).get("qty", 0) for r in result_rows),
+        }
+        for m in all_months
+    }
+
     return {
-        "months":      all_months,
-        "rows":        result_rows[start: start + page_size],
-        "total_count": total_count,
-        "page":        page,
-        "page_size":   page_size,
-        "total_pages": max(1, (total_count + page_size - 1) // page_size),
+        "months":               all_months,
+        "rows":                 result_rows[start: start + page_size],
+        "total_count":          total_count,
+        "shop_count":           shop_count,
+        "page":                 page,
+        "page_size":            page_size,
+        "total_pages":          max(1, (total_count + page_size - 1) // page_size),
+        "grand_total_revenue":  grand_total_revenue,
+        "grand_total_qty":      grand_total_qty,
+        "grand_total_by_month": grand_total_by_month,
     }
 
 
@@ -1512,11 +1680,18 @@ def mis_customer_table(
 def mis_export_excel(
     table:            str = Query("segment"),
     financial_year:   str = Query(None),
-    month:            str = Query(None),
-    segment_category: str = Query(None),
-    category:         str = Query(None),
+    month:            List[str] = Query(default=None),
+    segment_category: List[str] = Query(default=None),
+    category:         List[str] = Query(default=None),
     customer_search:  str = Query(None),
+    sku_name:         str = Query(None),   # legacy
+    sku:              str = Query(None),   # used by frontend
+    grm_filter:       List[str] = Query(default=None),  # grammage filter — mirrors segment/customer-table
 ):
+    # Merge both param names
+    sku_name = sku_name or sku
+    # Normalise grm values (spaces encoded as "+" by URLSearchParams.toString())
+    grm_values = [g.replace("+", " ") for g in (grm_filter or []) if g]
     import io
     try:
         import openpyxl
@@ -1533,80 +1708,189 @@ def mis_export_excel(
     bold        = Font(bold=True)
 
     if table == "segment":
-        q = sb.table("mis_segment_monthly").select(
-            "financial_year, month, segment_category, category, total_revenue"
-        )
-        if financial_year:   q = q.eq("financial_year", financial_year)
-        if month:            q = q.eq("month", month)
-        if segment_category: q = q.eq("segment_category", segment_category)
-        if category:         q = q.eq("category", category)
-        rows = q.execute().data
+        # When grm_filter is active, query mis_transactions directly so the
+        # exported numbers match exactly what the dashboard shows.
+        if grm_values:
+            raw = []
+            offset = 0
+            batch_size = 1000
+            while True:
+                q = sb.table("mis_transactions").select(
+                    "financial_year, month, segment_category, category, net_revenue, qty"
+                )
+                if financial_year:   q = q.eq("financial_year", financial_year)
+                if month:            q = q.in_("month", month)
+                if segment_category: q = q.in_("segment_category", segment_category)
+                if category:         q = q.in_("category", category)
+                q = q.in_("grm", grm_values)
+                batch = q.range(offset, offset + batch_size - 1).execute().data
+                raw.extend(batch)
+                if len(batch) < batch_size:
+                    break
+                offset += batch_size
+            # Re-shape to match the materialized-view field names used below
+            rows = [
+                {
+                    "month":            r.get("month"),
+                    "segment_category": r.get("segment_category"),
+                    "category":         r.get("category"),
+                    "total_revenue":    r.get("net_revenue"),
+                    "total_qty":        r.get("qty"),
+                }
+                for r in raw
+            ]
+        else:
+            q = sb.table("mis_segment_monthly").select(
+                "financial_year, month, segment_category, category, total_revenue, total_qty"
+            )
+            if financial_year:   q = q.eq("financial_year", financial_year)
+            if month:            q = q.in_("month", month)
+            if segment_category: q = q.in_("segment_category", segment_category)
+            if category:         q = q.in_("category", category)
+            rows = q.execute().data
 
         all_months = sorted(
             {r["month"] for r in rows if r.get("month")},
             key=_month_label_sort,
         )
-        pivot: dict = {}
+        pivot_rev: dict = {}
+        pivot_qty: dict = {}
         for r in rows:
             seg = r.get("segment_category") or "Unknown"
             mon = r.get("month", "")
-            if seg not in pivot:
-                pivot[seg] = {}
-            pivot[seg][mon] = pivot[seg].get(mon, 0) + float(r.get("total_revenue") or 0)
+            if seg not in pivot_rev:
+                pivot_rev[seg] = {}
+                pivot_qty[seg] = {}
+            pivot_rev[seg][mon] = pivot_rev[seg].get(mon, 0) + float(r.get("total_revenue") or 0)
+            pivot_qty[seg][mon] = pivot_qty[seg].get(mon, 0) + int(r.get("total_qty") or 0)
 
         ws.title = "Segment Revenue"
+        # Header
         ws.append(["Segment"] + all_months + ["Total"])
         for cell in ws[1]:
             cell.fill = header_fill
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center")
 
-        ordered = [s for s in SEGMENT_ORDER if s in pivot] + \
-                  [s for s in pivot if s not in SEGMENT_ORDER]
-        for seg in ordered:
-            vals = [pivot.get(seg, {}).get(m, 0) for m in all_months]
-            ws.append([seg] + vals + [sum(vals)])
+        qty_fill = PatternFill("solid", fgColor="EBF3FC")
+        qty_font = Font(italic=True, color="555555", size=10)
 
-        grand = [sum(pivot.get(s, {}).get(m, 0) for s in ordered) for m in all_months]
-        ws.append(["Grand Total"] + grand + [sum(grand)])
+        ordered = [s for s in SEGMENT_ORDER if s in pivot_rev] +                   [s for s in pivot_rev if s not in SEGMENT_ORDER]
+        for seg in ordered:
+            rev_vals = [pivot_rev.get(seg, {}).get(m, 0) for m in all_months]
+            qty_vals = [pivot_qty.get(seg, {}).get(m, 0) for m in all_months]
+            ws.append([seg] + rev_vals + [sum(rev_vals)])
+            ws.append([f"  {seg} (Qty)"] + qty_vals + [sum(qty_vals)])
+            for cell in ws[ws.max_row]:
+                cell.fill = qty_fill
+                cell.font = qty_font
+
+        # Grand total revenue row
+        grand_rev = [sum(pivot_rev.get(s, {}).get(m, 0) for s in ordered) for m in all_months]
+        ws.append(["Grand Total Revenue"] + grand_rev + [sum(grand_rev)])
+        for cell in ws[ws.max_row]:
+            cell.font = bold
+        # Grand total qty row
+        grand_qty = [sum(pivot_qty.get(s, {}).get(m, 0) for s in ordered) for m in all_months]
+        ws.append(["Grand Total Qty"] + grand_qty + [sum(grand_qty)])
         for cell in ws[ws.max_row]:
             cell.font = bold
 
         filename = f"MIS_Segment_{financial_year or 'all'}.xlsx"
 
     else:  # customer table
-        q = sb.table("mis_customer_monthly").select(
-            "financial_year, month, customer_name, segment_category, total_revenue"
-        )
-        if financial_year:   q = q.eq("financial_year", financial_year)
-        if month:            q = q.eq("month", month)
-        if segment_category: q = q.eq("segment_category", segment_category)
-        if category:         q = q.eq("category", category)
-        if customer_search:  q = q.ilike("customer_name", f"%{customer_search}%")
-        rows = q.limit(10000).execute().data
+        # When grm_filter is active, query mis_transactions directly so the
+        # exported numbers match what the customer-table dashboard shows.
+        if grm_values:
+            raw = []
+            offset = 0
+            batch_size = 1000
+            while True:
+                q = sb.table("mis_transactions").select(
+                    "financial_year, month, customer_name, segment_category, category, net_revenue, qty"
+                )
+                if financial_year:   q = q.eq("financial_year", financial_year)
+                if month:            q = q.in_("month", month)
+                if segment_category: q = q.in_("segment_category", segment_category)
+                if category:         q = q.in_("category", category)
+                if customer_search:  q = q.ilike("customer_name", f"%{customer_search}%")
+                q = q.in_("grm", grm_values)
+                batch = q.range(offset, offset + batch_size - 1).execute().data
+                raw.extend(batch)
+                if len(batch) < batch_size:
+                    break
+                offset += batch_size
+            rows = [
+                {
+                    "month":            r.get("month"),
+                    "customer_name":    _normalize_customer(r.get("customer_name") or "Unknown"),
+                    "segment_category": r.get("segment_category"),
+                    "total_revenue":    r.get("net_revenue"),
+                    "total_qty":        r.get("qty"),
+                }
+                for r in raw
+            ]
+        else:
+            q = sb.table("mis_customer_monthly").select(
+                "financial_year, month, customer_name, segment_category, total_revenue, total_qty"
+            )
+            if financial_year:   q = q.eq("financial_year", financial_year)
+            if month:            q = q.in_("month", month)
+            if segment_category: q = q.in_("segment_category", segment_category)
+            if category:         q = q.in_("category", category)
+            if customer_search:  q = q.ilike("customer_name", f"%{customer_search}%")
+            rows = q.limit(10000).execute().data
 
         all_months = sorted(
             {r["month"] for r in rows if r.get("month")},
             key=_month_label_sort,
         )
-        pivot = {}
+        pivot_rev = {}
+        pivot_qty = {}
         for r in rows:
-            c   = r.get("customer_name") or "Unknown"
+            c   = _normalize_customer(r.get("customer_name") or "Unknown")
             mon = r.get("month", "")
-            if c not in pivot:
-                pivot[c] = {}
-            pivot[c][mon] = pivot[c].get(mon, 0) + float(r.get("total_revenue") or 0)
+            if c not in pivot_rev:
+                pivot_rev[c] = {}
+                pivot_qty[c] = {}
+            pivot_rev[c][mon] = pivot_rev[c].get(mon, 0) + float(r.get("total_revenue") or 0)
+            pivot_qty[c][mon] = pivot_qty[c].get(mon, 0) + int(r.get("total_qty") or 0)
 
         ws.title = "Customer Revenue"
-        ws.append(["Customer"] + all_months + ["Total"])
+        ws.append(["Customer", "Segment"] + all_months + ["Total Rev", "Total Qty"])
         for cell in ws[1]:
             cell.fill = header_fill
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center")
 
-        for cust in sorted(pivot, key=lambda c: sum(pivot[c].values()), reverse=True):
-            vals = [pivot[cust].get(m, 0) for m in all_months]
-            ws.append([cust] + vals + [sum(vals)])
+        # Build segment lookup
+        seg_lookup = {}
+        for r in rows:
+            c = r.get("customer_name") or "Unknown"
+            if c not in seg_lookup:
+                seg_lookup[c] = r.get("segment_category", "")
+
+        qty_fill = PatternFill("solid", fgColor="EBF3FC")
+        qty_font = Font(italic=True, color="555555", size=10)
+
+        for cust in sorted(pivot_rev, key=lambda c: sum(pivot_rev[c].values()), reverse=True):
+            rev_vals = [pivot_rev[cust].get(m, 0) for m in all_months]
+            qty_vals = [pivot_qty[cust].get(m, 0) for m in all_months]
+            ws.append([cust, seg_lookup.get(cust, "")] + rev_vals + [sum(rev_vals), sum(qty_vals)])
+            ws.append([f"  {cust} (Qty)", ""] + qty_vals + ["", sum(qty_vals)])
+            for cell in ws[ws.max_row]:
+                cell.fill = qty_fill
+                cell.font = qty_font
+
+        # Grand total row
+        grand_rev = [sum(pivot_rev[c].get(m, 0) for c in pivot_rev) for m in all_months]
+        grand_qty = [sum(pivot_qty[c].get(m, 0) for c in pivot_qty) for m in all_months]
+        ws.append(["Grand Total Revenue", ""] + grand_rev + [sum(grand_rev), ""])
+        for cell in ws[ws.max_row]:
+            cell.font = bold
+        ws.append(["Grand Total Qty", ""] + grand_qty + ["", sum(grand_qty)])
+        for cell in ws[ws.max_row]:
+            cell.font = bold
 
         filename = f"MIS_Customer_{financial_year or 'all'}.xlsx"
 
