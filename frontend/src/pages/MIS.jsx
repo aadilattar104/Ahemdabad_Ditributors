@@ -229,12 +229,39 @@ function SkeletonRow({ cols }) {
   );
 }
 
+// ── View mode toggle — shared style ───────────────────────────────────────────
+function ViewModeToggle({ value, onChange }) {
+  const opts = [
+    { key: "both",    label: "Rev + Qty" },
+    { key: "revenue", label: "Revenue" },
+    { key: "qty",     label: "Qty" },
+  ];
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 0, borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", overflow: "hidden" }}>
+      {opts.map(o => (
+        <button
+          key={o.key}
+          onClick={() => onChange(o.key)}
+          style={{
+            fontSize: 12, padding: "5px 12px", cursor: "pointer", border: "none",
+            borderRight: o.key !== "qty" ? "0.5px solid var(--color-border-secondary)" : "none",
+            background: value === o.key ? "rgba(55,138,221,0.10)" : "var(--color-background-primary)",
+            color: value === o.key ? "var(--color-text-info, #378ADD)" : "var(--color-text-secondary)",
+            fontWeight: value === o.key ? 600 : 400,
+          }}
+        >{o.label}</button>
+      ))}
+    </div>
+  );
+}
+
 // ── Table 1: Segment × Month ───────────────────────────────────────────────────
 function SegmentTable({ financialYear, filters, allSkus }) {
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
   const [selSeg,  setSelSeg]  = useState("");  // highlight filter
+  const [viewMode, setViewMode] = useState("both"); // "both" | "revenue" | "qty"
 
   const load = useCallback(() => {
     setLoading(true); setError("");
@@ -286,11 +313,14 @@ function SegmentTable({ financialYear, filters, allSkus }) {
           <p style={S.cardTitle}>Segment Revenue</p>
           <p style={S.cardSubtitle}>Revenue by segment across months</p>
         </div>
-        <a href={exportUrl()} download style={{ textDecoration: "none" }}>
-          <button style={S.exportBtn}>
-            <i className="ti ti-download" style={{ fontSize: 13 }} /> Export Excel
-          </button>
-        </a>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <ViewModeToggle value={viewMode} onChange={setViewMode} />
+          <a href={exportUrl()} download style={{ textDecoration: "none" }}>
+            <button style={S.exportBtn}>
+              <i className="ti ti-download" style={{ fontSize: 13 }} /> Export Excel
+            </button>
+          </a>
+        </div>
       </div>
 
       {error && <p style={S.errorText}>{error}</p>}
@@ -332,15 +362,19 @@ function SegmentTable({ financialYear, filters, allSkus }) {
                       {months.map(m => {
                         const rev = row.cells[m]?.revenue || 0;
                         const qty = row.cells[m]?.qty || 0;
+                        const hasVal = viewMode === "qty" ? qty > 0 : rev > 0;
                         return (
-                          <td key={m} style={{ ...S.td, textAlign: "right", color: rev > 0 ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>
-                            {rev > 0 ? <><div>{fmt(rev)}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{qty.toLocaleString("en-IN")} qty</div></> : "—"}
+                          <td key={m} style={{ ...S.td, textAlign: "right", color: hasVal ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>
+                            {!hasVal ? "—" : (<>
+                              {viewMode !== "qty"     && <div>{fmt(rev)}</div>}
+                              {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 500 : 400 }}>{qty.toLocaleString("en-IN")} qty</div>}
+                            </>)}
                           </td>
                         );
                       })}
                       <td style={{ ...S.td, textAlign: "right", fontWeight: 600, background: "var(--color-background-secondary)" }}>
-                        <div>{fmt(row.total_revenue)}</div>
-                        <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{(row.total_qty||0).toLocaleString("en-IN")} qty</div>
+                        {viewMode !== "qty"     && <div>{fmt(row.total_revenue)}</div>}
+                        {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 600 : 400 }}>{(row.total_qty||0).toLocaleString("en-IN")} qty</div>}
                       </td>
                     </tr>
                   );
@@ -353,17 +387,21 @@ function SegmentTable({ financialYear, filters, allSkus }) {
                 {months.map(m => {
                   const colTotal = rows.reduce((s, r) => s + (r.cells[m]?.revenue || 0), 0);
                   const qtyTotal = rows.reduce((s, r) => s + (r.cells[m]?.qty || 0), 0);
+                  const hasVal   = viewMode === "qty" ? qtyTotal > 0 : colTotal > 0;
                   return (
                     <td key={m} style={{ ...S.td, textAlign: "right", fontWeight: 600 }}>
-                      {colTotal > 0 ? <><div>{fmt(colTotal)}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{qtyTotal.toLocaleString("en-IN")} qty</div></> : "—"}
+                      {!hasVal ? "—" : (<>
+                        {viewMode !== "qty"     && <div>{fmt(colTotal)}</div>}
+                        {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 600 : 400 }}>{qtyTotal.toLocaleString("en-IN")} qty</div>}
+                      </>)}
                     </td>
                   );
                 })}
                 <td style={{ ...S.td, textAlign: "right", fontWeight: 700, background: "var(--color-background-secondary)", fontSize: 13 }}>
-                  <div>{fmt(data.grand_total_revenue)}</div>
-                  <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", fontWeight: 400 }}>
+                  {viewMode !== "qty"     && <div>{fmt(data.grand_total_revenue)}</div>}
+                  {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: 700 }}>
                     {(data.grand_total_qty ?? rows.reduce((s,r)=>s+(r.total_qty||0),0)).toLocaleString("en-IN")} qty
-                  </div>
+                  </div>}
                 </td>
               </tr>
             )}
@@ -381,6 +419,7 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
   const [error,   setError]   = useState("");
   const [search,  setSearch]  = useState("");
   const [page,    setPage]    = useState(1);
+  const [viewMode, setViewMode] = useState("both"); // "both" | "revenue" | "qty"
   const searchRef = useRef();
 
   const load = useCallback((pg = 1, q = search) => {
@@ -450,6 +489,7 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <ViewModeToggle value={viewMode} onChange={setViewMode} />
           {/* Search */}
           <div style={{ position: "relative" }}>
             <i className="ti ti-search" style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: "var(--color-text-tertiary)", pointerEvents: "none" }} />
@@ -513,17 +553,21 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
                 {months.map(m => {
                   const colTotal = data.grand_total_by_month?.[m]?.revenue ?? rows.reduce((s, r) => s + (r.cells[m]?.revenue || 0), 0);
                   const qtyTotal = data.grand_total_by_month?.[m]?.qty     ?? rows.reduce((s, r) => s + (r.cells[m]?.qty    || 0), 0);
+                  const hasVal   = viewMode === "qty" ? qtyTotal > 0 : colTotal > 0;
                   return (
                     <td key={m} style={{ ...S.td, textAlign: "right", fontWeight: 600, background: "var(--color-background-secondary)" }}>
-                      {colTotal > 0 ? <><div>{fmt(colTotal)}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{qtyTotal.toLocaleString("en-IN")} qty</div></> : "—"}
+                      {!hasVal ? "—" : (<>
+                        {viewMode !== "qty"     && <div>{fmt(colTotal)}</div>}
+                        {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 600 : 400 }}>{qtyTotal.toLocaleString("en-IN")} qty</div>}
+                      </>)}
                     </td>
                   );
                 })}
                 <td style={{ ...S.td, textAlign: "right", fontWeight: 700, background: "var(--color-background-secondary)", fontSize: 13 }}>
-                  <div>{fmt(data.grand_total_revenue ?? rows.reduce((s,r)=>s+(r.total_revenue||0),0))}</div>
-                  <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", fontWeight: 400 }}>
+                  {viewMode !== "qty"     && <div>{fmt(data.grand_total_revenue ?? rows.reduce((s,r)=>s+(r.total_revenue||0),0))}</div>}
+                  {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: 700 }}>
                     {(data.grand_total_qty ?? rows.reduce((s,r)=>s+(r.total_qty||0),0)).toLocaleString("en-IN")} qty
-                  </div>
+                  </div>}
                 </td>
               </tr>
             )}
@@ -546,15 +590,19 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
                       {months.map(m => {
                         const rev = row.cells[m]?.revenue || 0;
                         const qty = row.cells[m]?.qty || 0;
+                        const hasVal = viewMode === "qty" ? qty > 0 : rev > 0;
                         return (
-                          <td key={m} style={{ ...S.td, textAlign: "right", color: rev > 0 ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>
-                            {rev > 0 ? <><div>{fmt(rev)}</div><div style={{ fontSize: 11, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{qty.toLocaleString("en-IN")} qty</div></> : "—"}
+                          <td key={m} style={{ ...S.td, textAlign: "right", color: hasVal ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>
+                            {!hasVal ? "—" : (<>
+                              {viewMode !== "qty"     && <div>{fmt(rev)}</div>}
+                              {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 500 : 400 }}>{qty.toLocaleString("en-IN")} qty</div>}
+                            </>)}
                           </td>
                         );
                       })}
                       <td style={{ ...S.td, textAlign: "right", fontWeight: 600, background: "var(--color-background-secondary)" }}>
-                        <div>{fmt(row.total_revenue)}</div>
-                        <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{(row.total_qty||0).toLocaleString("en-IN")} qty</div>
+                        {viewMode !== "qty"     && <div>{fmt(row.total_revenue)}</div>}
+                        {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 600 : 400 }}>{(row.total_qty||0).toLocaleString("en-IN")} qty</div>}
                       </td>
                     </tr>
                   );
