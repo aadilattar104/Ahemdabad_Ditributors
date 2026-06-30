@@ -230,21 +230,30 @@ function SkeletonRow({ cols }) {
 }
 
 // ── View mode toggle — shared style ───────────────────────────────────────────
-function ViewModeToggle({ value, onChange }) {
+function ViewModeToggle({ value, onChange, percentBasis, onPercentClick }) {
   const opts = [
     { key: "both",    label: "Rev + Qty" },
     { key: "revenue", label: "Revenue" },
     { key: "qty",     label: "Qty" },
+    { key: "percent", label: "%" },
   ];
+  const handleClick = (key) => {
+    if (key === "percent") {
+      // Capture last active metric (revenue/qty) as the percent basis.
+      // If coming from "both", default to revenue.
+      onPercentClick?.(value === "qty" ? "qty" : "revenue");
+    }
+    onChange(key);
+  };
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 0, borderRadius: "var(--border-radius-md)", border: "0.5px solid var(--color-border-secondary)", overflow: "hidden" }}>
       {opts.map(o => (
         <button
           key={o.key}
-          onClick={() => onChange(o.key)}
+          onClick={() => handleClick(o.key)}
           style={{
             fontSize: 12, padding: "5px 12px", cursor: "pointer", border: "none",
-            borderRight: o.key !== "qty" ? "0.5px solid var(--color-border-secondary)" : "none",
+            borderRight: o.key !== "percent" ? "0.5px solid var(--color-border-secondary)" : "none",
             background: value === o.key ? "rgba(55,138,221,0.10)" : "var(--color-background-primary)",
             color: value === o.key ? "var(--color-text-info, #378ADD)" : "var(--color-text-secondary)",
             fontWeight: value === o.key ? 600 : 400,
@@ -261,7 +270,8 @@ function SegmentTable({ financialYear, filters, allSkus }) {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
   const [selSeg,  setSelSeg]  = useState("");  // highlight filter
-  const [viewMode, setViewMode] = useState("both"); // "both" | "revenue" | "qty"
+  const [viewMode, setViewMode] = useState("both"); // "both" | "revenue" | "qty" | "percent"
+  const [percentBasis, setPercentBasis] = useState("revenue"); // "revenue" | "qty" — captured when % clicked
 
   const load = useCallback(() => {
     setLoading(true); setError("");
@@ -320,6 +330,22 @@ function SegmentTable({ financialYear, filters, allSkus }) {
     return ((val / total) * 100).toFixed(1) + "%";
   };
 
+  // Shared cell-content renderer — handles "both" | "revenue" | "qty" | "percent" modes.
+  // In percent mode, the % value (based on percentBasis) becomes the large primary value
+  // and nothing else is shown.
+  const renderCellContent = (rev, qty, revPct, qtyPct, totalWeight = 400, qtyWeight = 500) => {
+    if (viewMode === "percent") {
+      const pct = percentBasis === "qty" ? qtyPct : revPct;
+      return <div style={{ fontWeight: 600 }}>{pct || "—"}</div>;
+    }
+    return (<>
+      {viewMode !== "qty"     && <div>{fmt(rev)}</div>}
+      {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? qtyWeight : totalWeight }}>{qty.toLocaleString("en-IN")} qty</div>}
+      {viewMode !== "qty" && revPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{revPct}</div>}
+      {viewMode === "qty" && qtyPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{qtyPct}</div>}
+    </>);
+  };
+
   return (
     <div style={S.card}>
       {/* Header */}
@@ -329,7 +355,12 @@ function SegmentTable({ financialYear, filters, allSkus }) {
           <p style={S.cardSubtitle}>Revenue by segment across months</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <ViewModeToggle value={viewMode} onChange={setViewMode} />
+          <ViewModeToggle
+            value={viewMode}
+            onChange={setViewMode}
+            percentBasis={percentBasis}
+            onPercentClick={setPercentBasis}
+          />
           <a href={exportUrl()} download style={{ textDecoration: "none" }}>
             <button style={S.exportBtn}>
               <i className="ti ti-download" style={{ fontSize: 13 }} /> Export Excel
@@ -377,25 +408,19 @@ function SegmentTable({ financialYear, filters, allSkus }) {
                       {months.map(m => {
                         const rev = row.cells[m]?.revenue || 0;
                         const qty = row.cells[m]?.qty || 0;
-                        const hasVal = viewMode === "qty" ? qty > 0 : rev > 0;
+                        const hasVal = viewMode === "percent"
+                          ? (percentBasis === "qty" ? qty > 0 : rev > 0)
+                          : (viewMode === "qty" ? qty > 0 : rev > 0);
                         const revPct = pctStr(rev, monthRevTotals[m]);
                         const qtyPct = pctStr(qty, monthQtyTotals[m]);
                         return (
                           <td key={m} style={{ ...S.td, textAlign: "right", color: hasVal ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>
-                            {!hasVal ? "—" : (<>
-                              {viewMode !== "qty"     && <div>{fmt(rev)}</div>}
-                              {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 500 : 400 }}>{qty.toLocaleString("en-IN")} qty</div>}
-                              {viewMode !== "qty" && revPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{revPct}</div>}
-                              {viewMode === "qty" && qtyPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{qtyPct}</div>}
-                            </>)}
+                            {!hasVal ? "—" : renderCellContent(rev, qty, revPct, qtyPct)}
                           </td>
                         );
                       })}
                       <td style={{ ...S.td, textAlign: "right", fontWeight: 600, background: "var(--color-background-secondary)" }}>
-                        {viewMode !== "qty"     && <div>{fmt(row.total_revenue)}</div>}
-                        {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 600 : 400 }}>{(row.total_qty||0).toLocaleString("en-IN")} qty</div>}
-                        {viewMode !== "qty" && pctStr(row.total_revenue, grandRevTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(row.total_revenue, grandRevTotal)}</div>}
-                        {viewMode === "qty" && pctStr(row.total_qty, grandQtyTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(row.total_qty, grandQtyTotal)}</div>}
+                        {renderCellContent(row.total_revenue, row.total_qty || 0, pctStr(row.total_revenue, grandRevTotal), pctStr(row.total_qty, grandQtyTotal), 400, 600)}
                       </td>
                     </tr>
                   );
@@ -411,7 +436,7 @@ function SegmentTable({ financialYear, filters, allSkus }) {
                   const hasVal   = viewMode === "qty" ? qtyTotal > 0 : colTotal > 0;
                   return (
                     <td key={m} style={{ ...S.td, textAlign: "right", fontWeight: 600 }}>
-                      {!hasVal ? "—" : (<>
+                      {!hasVal ? "—" : viewMode === "percent" ? <div style={{ fontWeight: 700 }}>100%</div> : (<>
                         {viewMode !== "qty"     && <div>{fmt(colTotal)}</div>}
                         {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 600 : 400 }}>{qtyTotal.toLocaleString("en-IN")} qty</div>}
                       </>)}
@@ -419,11 +444,14 @@ function SegmentTable({ financialYear, filters, allSkus }) {
                   );
                 })}
                 <td style={{ ...S.td, textAlign: "right", fontWeight: 700, background: "var(--color-background-secondary)", fontSize: 13 }}>
-                  {viewMode !== "qty"     && <div>{fmt(data.grand_total_revenue)}</div>}
-                  {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: 700 }}>
-                    {(data.grand_total_qty ?? rows.reduce((s,r)=>s+(r.total_qty||0),0)).toLocaleString("en-IN")} qty
-                  </div>}
+                  {viewMode === "percent" ? <div style={{ fontWeight: 700 }}>100%</div> : (<>
+                    {viewMode !== "qty"     && <div>{fmt(data.grand_total_revenue)}</div>}
+                    {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: 700 }}>
+                      {(data.grand_total_qty ?? rows.reduce((s,r)=>s+(r.total_qty||0),0)).toLocaleString("en-IN")} qty
+                    </div>}
+                  </>)}
                 </td>
+
               </tr>
             )}
           </tbody>
@@ -438,12 +466,13 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
   const [data,    setData]    = useState(null);
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState("");
-  const [search,  setSearch]  = useState("");
+  const [selectedCustomers, setSelectedCustomers] = useState([]); // multi-select, replaces free-text search
   const [page,    setPage]    = useState(1);
-  const [viewMode, setViewMode] = useState("both"); // "both" | "revenue" | "qty"
-  const searchRef = useRef();
+  const [viewMode, setViewMode] = useState("both"); // "both" | "revenue" | "qty" | "percent"
+  const [percentBasis, setPercentBasis] = useState("revenue"); // "revenue" | "qty" — captured when % clicked
+  const [customerOptions, setCustomerOptions] = useState([]); // fetched, scoped to filters.segmentCategories
 
-  const load = useCallback((pg = 1, q = search) => {
+  const load = useCallback((pg = 1) => {
     setLoading(true); setError("");
 
     const baseParams = (pg2 = 1) => {
@@ -453,7 +482,7 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
       (filters.months || []).forEach(m => p.append("month", m));
       (filters.segmentCategories || []).forEach(s => p.append("segment_category", s));
       (filters.categories || []).forEach(c => p.append("category", c));
-      if (q)                        p.set("customer_search", q);
+      selectedCustomers.forEach(c => p.append("customer_name", c));
       if (pos && pos !== "All")     p.set("pos", pos);
       return p;
     };
@@ -468,9 +497,26 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
       .then(d => { setData(d); setPage(pg); })
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
-  }, [financialYear, filters.months, filters.segmentCategories, filters.categories, filters.sku, filters.grammage, allSkus, pos]);
+  }, [financialYear, filters.months, filters.segmentCategories, filters.categories, filters.sku, filters.grammage, allSkus, pos, selectedCustomers]);
 
-  useEffect(() => { load(1, ""); setSearch(""); }, [load]);
+  useEffect(() => { load(1); }, [load]);
+
+  // Fetch customer options scoped to the currently selected segments.
+  // When no segment is selected, show ALL customers.
+  useEffect(() => {
+    const p = new URLSearchParams();
+    if (financialYear) p.set("financial_year", financialYear);
+    (filters.segmentCategories || []).forEach(s => p.append("segment_category", s));
+    fetch(`${BASE_URL}/mis/customers?${p}`)
+      .then(r => r.json())
+      .then(d => {
+        const opts = d.customers || [];
+        setCustomerOptions(opts);
+        // Prune any previously-selected customers that fall outside the new segment scope
+        setSelectedCustomers(prev => prev.filter(c => opts.includes(c)));
+      })
+      .catch(() => setCustomerOptions([]));
+  }, [financialYear, filters.segmentCategories]);
 
   const exportUrl = () => {
     const p = new URLSearchParams({ table: "customer" });
@@ -479,7 +525,7 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
     if (filters.segmentCategory) p.set("segment_category", filters.segmentCategory);
     if (filters.category)        p.set("category", filters.category);
     if (filters.sku)             p.set("sku", filters.sku);
-    if (search)                  p.set("customer_search", search);
+    selectedCustomers.forEach(c => p.append("customer_name", c));
     if (pos && pos !== "All")    p.set("pos", pos);
     // Pass grm_filter so the exported Excel matches the grammage-filtered dashboard
     const grmVals = filters.grammage ? gramGrmValues(filters.grammage) : [];
@@ -509,12 +555,18 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
     return ((val / total) * 100).toFixed(1) + "%";
   };
 
-
-  const handleSearch = (e) => {
-    const v = e.target.value;
-    setSearch(v);
-    clearTimeout(searchRef._t);
-    searchRef._t = setTimeout(() => load(1, v), 400);
+  // Shared cell-content renderer — handles "both" | "revenue" | "qty" | "percent" modes.
+  const renderCellContent = (rev, qty, revPct, qtyPct, totalWeight = 400, qtyWeight = 500) => {
+    if (viewMode === "percent") {
+      const pct = percentBasis === "qty" ? qtyPct : revPct;
+      return <div style={{ fontWeight: 600 }}>{pct || "—"}</div>;
+    }
+    return (<>
+      {viewMode !== "qty"     && <div>{fmt(rev)}</div>}
+      {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? qtyWeight : totalWeight }}>{qty.toLocaleString("en-IN")} qty</div>}
+      {viewMode !== "qty" && revPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{revPct}</div>}
+      {viewMode === "qty" && qtyPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{qtyPct}</div>}
+    </>);
   };
 
   return (
@@ -528,19 +580,20 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <ViewModeToggle value={viewMode} onChange={setViewMode} />
-          {/* Search */}
-          <div style={{ position: "relative" }}>
-            <i className="ti ti-search" style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: "var(--color-text-tertiary)", pointerEvents: "none" }} />
-            <input
-              ref={searchRef}
-              type="text"
-              placeholder="Search customer…"
-              value={search}
-              onChange={handleSearch}
-              style={{ ...S.select, paddingLeft: 30, minWidth: 180 }}
-            />
-          </div>
+          <ViewModeToggle
+            value={viewMode}
+            onChange={setViewMode}
+            percentBasis={percentBasis}
+            onPercentClick={setPercentBasis}
+          />
+          {/* Customer multi-select — replaces free-text search, scoped to selected segments */}
+          <MultiSelect
+            label="customers"
+            header="Customer"
+            options={customerOptions}
+            selected={selectedCustomers}
+            onChange={setSelectedCustomers}
+          />
           <a href={exportUrl()} download style={{ textDecoration: "none" }}>
             <button style={S.exportBtn}>
               <i className="ti ti-download" style={{ fontSize: 13 }} /> Export Excel
@@ -595,21 +648,19 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
                   const hasVal   = viewMode === "qty" ? qtyTotal > 0 : colTotal > 0;
                   return (
                     <td key={m} style={{ ...S.td, textAlign: "right", fontWeight: 600, background: "var(--color-background-secondary)" }}>
-                      {!hasVal ? "—" : (<>
-                        {viewMode !== "qty"     && <div>{fmt(colTotal)}</div>}
-                        {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 600 : 400 }}>{qtyTotal.toLocaleString("en-IN")} qty</div>}
-                        {viewMode !== "qty" && pctStr(colTotal, grandRevTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(colTotal, grandRevTotal)}</div>}
-                        {viewMode === "qty" && pctStr(qtyTotal, grandQtyTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(qtyTotal, grandQtyTotal)}</div>}
-                      </>)}
+                      {!hasVal ? "—" : renderCellContent(colTotal, qtyTotal, pctStr(colTotal, grandRevTotal), pctStr(qtyTotal, grandQtyTotal), 400, 600)}
                     </td>
                   );
                 })}
                 <td style={{ ...S.td, textAlign: "right", fontWeight: 700, background: "var(--color-background-secondary)", fontSize: 13 }}>
-                  {viewMode !== "qty"     && <div>{fmt(data.grand_total_revenue ?? rows.reduce((s,r)=>s+(r.total_revenue||0),0))}</div>}
-                  {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: 700 }}>
-                    {(data.grand_total_qty ?? rows.reduce((s,r)=>s+(r.total_qty||0),0)).toLocaleString("en-IN")} qty
-                  </div>}
+                  {viewMode === "percent" ? <div style={{ fontWeight: 700 }}>100%</div> : (<>
+                    {viewMode !== "qty"     && <div>{fmt(data.grand_total_revenue ?? rows.reduce((s,r)=>s+(r.total_revenue||0),0))}</div>}
+                    {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: 700 }}>
+                      {(data.grand_total_qty ?? rows.reduce((s,r)=>s+(r.total_qty||0),0)).toLocaleString("en-IN")} qty
+                    </div>}
+                  </>)}
                 </td>
+
               </tr>
             )}
             {loading
@@ -631,26 +682,21 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
                       {months.map(m => {
                         const rev = row.cells[m]?.revenue || 0;
                         const qty = row.cells[m]?.qty || 0;
-                        const hasVal = viewMode === "qty" ? qty > 0 : rev > 0;
+                        const hasVal = viewMode === "percent"
+                          ? (percentBasis === "qty" ? qty > 0 : rev > 0)
+                          : (viewMode === "qty" ? qty > 0 : rev > 0);
                         const revPct = pctStr(rev, monthRevTotals[m]);
                         const qtyPct = pctStr(qty, monthQtyTotals[m]);
                         return (
                           <td key={m} style={{ ...S.td, textAlign: "right", color: hasVal ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>
-                            {!hasVal ? "—" : (<>
-                              {viewMode !== "qty"     && <div>{fmt(rev)}</div>}
-                              {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 500 : 400 }}>{qty.toLocaleString("en-IN")} qty</div>}
-                              {viewMode !== "qty" && revPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{revPct}</div>}
-                              {viewMode === "qty" && qtyPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{qtyPct}</div>}
-                            </>)}
+                            {!hasVal ? "—" : renderCellContent(rev, qty, revPct, qtyPct)}
                           </td>
                         );
                       })}
                       <td style={{ ...S.td, textAlign: "right", fontWeight: 600, background: "var(--color-background-secondary)" }}>
-                        {viewMode !== "qty"     && <div>{fmt(row.total_revenue)}</div>}
-                        {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 600 : 400 }}>{(row.total_qty||0).toLocaleString("en-IN")} qty</div>}
-                        {viewMode !== "qty" && pctStr(row.total_revenue, grandRevTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(row.total_revenue, grandRevTotal)}</div>}
-                        {viewMode === "qty" && pctStr(row.total_qty, grandQtyTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(row.total_qty, grandQtyTotal)}</div>}
+                        {renderCellContent(row.total_revenue, row.total_qty || 0, pctStr(row.total_revenue, grandRevTotal), pctStr(row.total_qty, grandQtyTotal), 400, 600)}
                       </td>
+
                     </tr>
                   );
                 })}
@@ -779,23 +825,6 @@ export default function MIS() {
             </p>
           )}
         </div>
-        <button
-          onClick={handleSync}
-          disabled={syncing}
-          style={{
-            display: "flex", alignItems: "center", gap: 6,
-            padding: "8px 16px", fontSize: 13, cursor: syncing ? "not-allowed" : "pointer",
-            borderRadius: "var(--border-radius-md)",
-            border: "0.5px solid var(--color-border-secondary)",
-            background: syncing ? "var(--color-background-secondary)" : "var(--color-background-primary)",
-            color: "var(--color-text-secondary)",
-            opacity: syncing ? 0.7 : 1,
-          }}
-        >
-          <i className={`ti ti-${syncing ? "loader-2" : "refresh"}`}
-            style={{ fontSize: 14, animation: syncing ? "spin 1s linear infinite" : "none" }} />
-          {syncing ? "Syncing…" : "Refresh Data"}
-        </button>
       </div>
 
       <style>{`@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }`}</style>

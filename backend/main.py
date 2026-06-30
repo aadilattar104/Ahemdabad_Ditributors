@@ -1400,6 +1400,37 @@ def mis_filters():
     }
 
 
+# ── /mis/customers ────────────────────────────────────────────────────────────
+# Returns distinct customer_name list, optionally scoped to selected segments.
+# Used to populate the Customer multi-select filter on CustomerTable.
+
+@app.get("/mis/customers")
+def mis_customers(
+    financial_year:   str = Query(None),
+    segment_category: List[str] = Query(default=[]),
+):
+    sb = get_supabase()
+    q  = sb.table("mis_transactions").select("customer_name")
+    if financial_year:
+        q = q.eq("financial_year", financial_year)
+    if segment_category:
+        q = q.in_("segment_category", segment_category)
+
+    # Paginate to bypass Supabase 1000-row cap
+    all_rows = []
+    batch_size = 1000
+    offset = 0
+    while True:
+        batch = q.range(offset, offset + batch_size - 1).execute().data
+        all_rows.extend(batch)
+        if len(batch) < batch_size:
+            break
+        offset += batch_size
+
+    customers = sorted({r["customer_name"] for r in all_rows if r.get("customer_name")})
+    return {"customers": customers}
+
+
 # ── /mis/segment-table ────────────────────────────────────────────────────────
 # Reads from mis_segment_monthly (materialized view) — max ~200 rows ever.
 
@@ -1526,6 +1557,7 @@ def mis_customer_table(
     segment_category: List[str] = Query(default=None),
     category:         List[str] = Query(default=None),
     customer_search:  str = Query(None),
+    customer_name:    List[str] = Query(default=None),
     sku_name:         str = Query(None),   # legacy
     sku:              str = Query(None),   # used by frontend
     grm_filter:       List[str] = Query(default=None),
@@ -1550,7 +1582,8 @@ def mis_customer_table(
         if month:            q = q.in_("month", month)
         if segment_category: q = q.in_("segment_category", segment_category)
         if category:         q = q.in_("category", category)
-        if customer_search:  q = q.ilike("customer_name", f"%{customer_search}%")
+        if customer_name:    q = q.in_("customer_name", customer_name)
+        elif customer_search: q = q.ilike("customer_name", f"%{customer_search}%")
         if grm_values:       q = q.in_("grm", grm_values)
         if sku_name:         q = q.ilike("sku_name", f"%{sku_name}%")
         return q
@@ -1582,7 +1615,8 @@ def mis_customer_table(
             if month:            q = q.in_("month", month)
             if segment_category: q = q.in_("segment_category", segment_category)
             if category:         q = q.in_("category", category)
-            if customer_search:  q = q.ilike("customer_name", f"%{customer_search}%")
+            if customer_name:    q = q.in_("customer_name", customer_name)
+            elif customer_search: q = q.ilike("customer_name", f"%{customer_search}%")
             batch = q.range(offset, offset + batch_size - 1).execute().data
             all_rows.extend(batch)
             if len(batch) < batch_size:
@@ -1684,6 +1718,7 @@ def mis_export_excel(
     segment_category: List[str] = Query(default=None),
     category:         List[str] = Query(default=None),
     customer_search:  str = Query(None),
+    customer_name:    List[str] = Query(default=None),
     sku_name:         str = Query(None),   # legacy
     sku:              str = Query(None),   # used by frontend
     grm_filter:       List[str] = Query(default=None),  # grammage filter — mirrors segment/customer-table
@@ -1813,7 +1848,8 @@ def mis_export_excel(
                 if month:            q = q.in_("month", month)
                 if segment_category: q = q.in_("segment_category", segment_category)
                 if category:         q = q.in_("category", category)
-                if customer_search:  q = q.ilike("customer_name", f"%{customer_search}%")
+                if customer_name:    q = q.in_("customer_name", customer_name)
+                elif customer_search: q = q.ilike("customer_name", f"%{customer_search}%")
                 q = q.in_("grm", grm_values)
                 batch = q.range(offset, offset + batch_size - 1).execute().data
                 raw.extend(batch)
@@ -1838,7 +1874,8 @@ def mis_export_excel(
             if month:            q = q.in_("month", month)
             if segment_category: q = q.in_("segment_category", segment_category)
             if category:         q = q.in_("category", category)
-            if customer_search:  q = q.ilike("customer_name", f"%{customer_search}%")
+            if customer_name:    q = q.in_("customer_name", customer_name)
+            elif customer_search: q = q.ilike("customer_name", f"%{customer_search}%")
             rows = q.limit(10000).execute().data
 
         all_months = sorted(
