@@ -124,6 +124,22 @@ function exportToPdf(distributor, filter, months, visibleShops, monthlySummary, 
       <div style="font-size:10px;color:#6b7280;">${ms.shopsServed > 0 ? `${ms.shopsServed} shop${ms.shopsServed !== 1 ? "s" : ""}` : "—"}</div>
     </td>`;
   }).join("");
+  // AOV row for PDF — average order value per month (revenue / shops served)
+  const aovDataCells = months.map(m => {
+    const ms = monthlySummary[m] || { aov: 0 };
+    return `<td style="background:#f9fafb;text-align:center;padding:5px 6px;border-bottom:0.5px solid #e5e7eb;">
+      <div style="font-size:11px;font-weight:500;color:#374151;">${ms.aov > 0 ? fmt(ms.aov) : "—"}</div>
+    </td>`;
+  }).join("");
+  const totalShopsActiveForAov = months.reduce((s, m) => s + (monthlySummary[m]?.shopsServed || 0), 0);
+  const overallAov = totalShopsActiveForAov > 0 ? totalAllRevenue / totalShopsActiveForAov : 0;
+  const aovRow = `<tr>
+    <td style="background:#f9fafb;font-size:11px;font-weight:600;color:#374151;padding:5px 8px;border-bottom:0.5px solid #e5e7eb;white-space:nowrap;">AOV</td>
+    ${aovDataCells}
+    <td style="background:#f9fafb;text-align:right;font-size:11px;font-weight:500;padding:5px 8px;border-bottom:0.5px solid #e5e7eb;">${overallAov > 0 ? fmt(overallAov) : "—"}</td>
+    <td colspan="4" style="background:#f9fafb;border-bottom:0.5px solid #e5e7eb;"></td>
+  </tr>`;
+
   const summaryRow = `<tr>
     <td style="background:#f9fafb;font-size:11px;font-weight:600;color:#374151;padding:5px 8px;border-bottom:1.5px solid #e5e7eb;white-space:nowrap;">Monthly Summary</td>
     ${summaryDataCells}
@@ -178,6 +194,7 @@ function exportToPdf(distributor, filter, months, visibleShops, monthlySummary, 
       </tr>
     </thead>
     <tbody>
+      ${aovRow}
       ${summaryRow}
       ${rows}
     </tbody>
@@ -286,7 +303,9 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
         shopsServed += 1;
       }
     });
-    acc[m] = { revenue, shopsServed };
+    // AOV = average order value = revenue / shops served for that month
+    const aov = shopsServed > 0 ? revenue / shopsServed : 0;
+    acc[m] = { revenue, shopsServed, aov };
     return acc;
   }, {});
 
@@ -591,6 +610,35 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
                     <th style={{ ...S.th, minWidth: 80 }}>Status</th>
                   </tr>
                 </thead>
+
+                {/* ── AOV row — average order value per month (revenue / shops served) ── */}
+                {visibleShops.length > 0 && (
+                  <tbody>
+                    <tr style={{ background: "var(--color-background-secondary)", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                      <td style={{ ...S.td, ...S.stickyCol, fontWeight: 600, fontSize: 12, color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>
+                        AOV
+                      </td>
+                      {months.map(m => {
+                        const ms = monthlySummary[m] || { aov: 0 };
+                        return (
+                          <td key={m} style={{ ...S.td, textAlign: "center", padding: "6px 4px" }}>
+                            <span style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-secondary)" }}>
+                              {ms.aov > 0 ? fmt(ms.aov) : "—"}
+                            </span>
+                          </td>
+                        );
+                      })}
+                      <td style={{ ...S.td, textAlign: "right", fontSize: 12, fontWeight: 500, paddingRight: 14, color: "var(--color-text-secondary)" }}>
+                        {(() => {
+                          const totalRev = visibleShops.reduce((s, sh) => s + (sh.total_revenue || 0), 0);
+                          const totalShopsActive = months.reduce((s, m) => s + (monthlySummary[m]?.shopsServed || 0), 0);
+                          return totalShopsActive > 0 ? fmt(totalRev / totalShopsActive) : "—";
+                        })()}
+                      </td>
+                      <td colSpan={4} />
+                    </tr>
+                  </tbody>
+                )}
 
                 {/* ── Monthly summary row — shops served + revenue per month ── */}
                 {visibleShops.length > 0 && (
