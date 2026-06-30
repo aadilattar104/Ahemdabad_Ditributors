@@ -305,6 +305,21 @@ function SegmentTable({ financialYear, filters, allSkus }) {
   const rows   = data?.rows   || [];
   const cols   = months.length + 2; // segment + months + total
 
+  // Precompute revenue AND qty totals per month and grand total for % share calculations
+  const monthRevTotals = {};
+  const monthQtyTotals = {};
+  months.forEach(m => {
+    monthRevTotals[m] = rows.reduce((s, r) => s + (r.cells[m]?.revenue || 0), 0);
+    monthQtyTotals[m] = rows.reduce((s, r) => s + (r.cells[m]?.qty     || 0), 0);
+  });
+  const grandRevTotal = data?.grand_total_revenue ?? rows.reduce((s, r) => s + (r.total_revenue || 0), 0);
+  const grandQtyTotal = data?.grand_total_qty     ?? rows.reduce((s, r) => s + (r.total_qty     || 0), 0);
+
+  const pctStr = (val, total) => {
+    if (!total || !val) return null;
+    return ((val / total) * 100).toFixed(1) + "%";
+  };
+
   return (
     <div style={S.card}>
       {/* Header */}
@@ -363,11 +378,15 @@ function SegmentTable({ financialYear, filters, allSkus }) {
                         const rev = row.cells[m]?.revenue || 0;
                         const qty = row.cells[m]?.qty || 0;
                         const hasVal = viewMode === "qty" ? qty > 0 : rev > 0;
+                        const revPct = pctStr(rev, monthRevTotals[m]);
+                        const qtyPct = pctStr(qty, monthQtyTotals[m]);
                         return (
                           <td key={m} style={{ ...S.td, textAlign: "right", color: hasVal ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>
                             {!hasVal ? "—" : (<>
                               {viewMode !== "qty"     && <div>{fmt(rev)}</div>}
                               {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 500 : 400 }}>{qty.toLocaleString("en-IN")} qty</div>}
+                              {viewMode !== "qty" && revPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{revPct}</div>}
+                              {viewMode === "qty" && qtyPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{qtyPct}</div>}
                             </>)}
                           </td>
                         );
@@ -375,6 +394,8 @@ function SegmentTable({ financialYear, filters, allSkus }) {
                       <td style={{ ...S.td, textAlign: "right", fontWeight: 600, background: "var(--color-background-secondary)" }}>
                         {viewMode !== "qty"     && <div>{fmt(row.total_revenue)}</div>}
                         {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 600 : 400 }}>{(row.total_qty||0).toLocaleString("en-IN")} qty</div>}
+                        {viewMode !== "qty" && pctStr(row.total_revenue, grandRevTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(row.total_revenue, grandRevTotal)}</div>}
+                        {viewMode === "qty" && pctStr(row.total_qty, grandQtyTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(row.total_qty, grandQtyTotal)}</div>}
                       </td>
                     </tr>
                   );
@@ -471,6 +492,24 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
   const rows   = data?.rows   || [];
   const cols   = months.length + 3; // customer + segment + months + total
 
+  // Precompute revenue AND qty totals per month and grand total for % share calculations.
+  // Uses API-provided grand totals (covers ALL pages) when available, falling back to
+  // current-page sums only as a safety net.
+  const monthRevTotals = {};
+  const monthQtyTotals = {};
+  months.forEach(m => {
+    monthRevTotals[m] = data?.grand_total_by_month?.[m]?.revenue ?? rows.reduce((s, r) => s + (r.cells[m]?.revenue || 0), 0);
+    monthQtyTotals[m] = data?.grand_total_by_month?.[m]?.qty     ?? rows.reduce((s, r) => s + (r.cells[m]?.qty     || 0), 0);
+  });
+  const grandRevTotal = data?.grand_total_revenue ?? rows.reduce((s, r) => s + (r.total_revenue || 0), 0);
+  const grandQtyTotal = data?.grand_total_qty     ?? rows.reduce((s, r) => s + (r.total_qty     || 0), 0);
+
+  const pctStr = (val, total) => {
+    if (!total || !val) return null;
+    return ((val / total) * 100).toFixed(1) + "%";
+  };
+
+
   const handleSearch = (e) => {
     const v = e.target.value;
     setSearch(v);
@@ -559,6 +598,8 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
                       {!hasVal ? "—" : (<>
                         {viewMode !== "qty"     && <div>{fmt(colTotal)}</div>}
                         {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 600 : 400 }}>{qtyTotal.toLocaleString("en-IN")} qty</div>}
+                        {viewMode !== "qty" && pctStr(colTotal, grandRevTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(colTotal, grandRevTotal)}</div>}
+                        {viewMode === "qty" && pctStr(qtyTotal, grandQtyTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(qtyTotal, grandQtyTotal)}</div>}
                       </>)}
                     </td>
                   );
@@ -591,11 +632,15 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
                         const rev = row.cells[m]?.revenue || 0;
                         const qty = row.cells[m]?.qty || 0;
                         const hasVal = viewMode === "qty" ? qty > 0 : rev > 0;
+                        const revPct = pctStr(rev, monthRevTotals[m]);
+                        const qtyPct = pctStr(qty, monthQtyTotals[m]);
                         return (
                           <td key={m} style={{ ...S.td, textAlign: "right", color: hasVal ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>
                             {!hasVal ? "—" : (<>
                               {viewMode !== "qty"     && <div>{fmt(rev)}</div>}
                               {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 500 : 400 }}>{qty.toLocaleString("en-IN")} qty</div>}
+                              {viewMode !== "qty" && revPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{revPct}</div>}
+                              {viewMode === "qty" && qtyPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{qtyPct}</div>}
                             </>)}
                           </td>
                         );
@@ -603,6 +648,8 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
                       <td style={{ ...S.td, textAlign: "right", fontWeight: 600, background: "var(--color-background-secondary)" }}>
                         {viewMode !== "qty"     && <div>{fmt(row.total_revenue)}</div>}
                         {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? 600 : 400 }}>{(row.total_qty||0).toLocaleString("en-IN")} qty</div>}
+                        {viewMode !== "qty" && pctStr(row.total_revenue, grandRevTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(row.total_revenue, grandRevTotal)}</div>}
+                        {viewMode === "qty" && pctStr(row.total_qty, grandQtyTotal) && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{pctStr(row.total_qty, grandQtyTotal)}</div>}
                       </td>
                     </tr>
                   );
