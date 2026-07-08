@@ -341,8 +341,6 @@ function SegmentTable({ financialYear, filters, allSkus }) {
     return (<>
       {viewMode !== "qty"     && <div>{fmt(rev)}</div>}
       {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? qtyWeight : totalWeight }}>{qty.toLocaleString("en-IN")} qty</div>}
-      {viewMode !== "qty" && revPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{revPct}</div>}
-      {viewMode === "qty" && qtyPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{qtyPct}</div>}
     </>);
   };
 
@@ -564,8 +562,6 @@ function CustomerTable({ financialYear, filters, pos, onPosChange, allSkus }) {
     return (<>
       {viewMode !== "qty"     && <div>{fmt(rev)}</div>}
       {viewMode !== "revenue" && <div style={{ fontSize: viewMode === "qty" ? 13 : 11, color: viewMode === "qty" ? "var(--color-text-primary)" : "var(--color-text-tertiary)", fontWeight: viewMode === "qty" ? qtyWeight : totalWeight }}>{qty.toLocaleString("en-IN")} qty</div>}
-      {viewMode !== "qty" && revPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{revPct}</div>}
-      {viewMode === "qty" && qtyPct && <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{qtyPct}</div>}
     </>);
   };
 

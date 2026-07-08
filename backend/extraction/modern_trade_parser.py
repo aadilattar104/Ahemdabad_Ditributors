@@ -245,25 +245,51 @@ def _parse_firstclub_sheet(rows, chain_name: str, upload_id: str) -> list:
     """
     Parse Firstclub flat sales sheet.
 
-    Extracted columns only (0-indexed):
-      0  sale_date         → bill_date, month, year
-      2  Product_name      → sku_name
-      4  Sum of units_sold → qty
-      5  Sum of gmv        → revenue  (treated as revenue)
+    Columns detected by HEADER NAME (not hardcoded position) so new columns
+    like 'City' don't break the parser.
 
-    FCN and brand are intentionally ignored.
+    Expected headers (any order):
+      sale_date         → bill_date, month, year
+      product_name      → sku_name
+      Sum of units_sold → qty
+      Sum of gmv        → revenue
+
+    FCN, Brand, City and any other columns are intentionally ignored.
     All rows are collapsed into ONE logical store:
       store_code = "FIRSTCLUB"
       store_name = "Firstclub"
       article_id = "" (not present in this format)
 
     Rows with the same (month, year, sku_name) are aggregated so that
-    the 14 individual FCN entries appear as a single Firstclub store.
+    the individual FCN entries appear as a single Firstclub store.
     """
     import datetime
 
+    if not rows:
+        return []
+
+    # ── Step 0: detect columns by header name ────────────────────────────────
+    header = rows[0]
+    col_map = {}
+    for ci, val in enumerate(header):
+        if val is None:
+            continue
+        key = str(val).strip().lower()
+        col_map[key] = ci
+
+    date_col    = col_map.get("sale_date")
+    sku_col     = col_map.get("product_name")
+    qty_col     = col_map.get("sum of units_sold")
+    revenue_col = col_map.get("sum of gmv")
+
+    if date_col is None or sku_col is None or qty_col is None or revenue_col is None:
+        print(f"[MT PARSER] Firstclub: missing expected columns. Found: {list(col_map.keys())}")
+        print(f"[MT PARSER] date_col={date_col} sku_col={sku_col} qty_col={qty_col} revenue_col={revenue_col}")
+        return []
+
+    print(f"[MT PARSER] Firstclub column map: date={date_col} sku={sku_col} qty={qty_col} revenue={revenue_col}")
+
     # ── Step 1: collect raw rows ──────────────────────────────────────────────
-    # key: (month_str, year_int, sku_name) → {qty, revenue}
     aggregated = {}
 
     for row in rows[1:]:   # row[0] is the header
@@ -272,12 +298,10 @@ def _parse_firstclub_sheet(rows, chain_name: str, upload_id: str) -> list:
         if all(v is None for v in row):
             continue
 
-        sale_date_raw = row[0]
-        # col 1 (FCN)   — intentionally skipped
-        sku_name      = str(row[2] or "").strip()
-        # col 3 (brand) — intentionally skipped
-        qty_raw       = row[4]
-        gmv_raw       = row[5]
+        sale_date_raw = row[date_col]
+        sku_name      = str(row[sku_col] or "").strip()
+        qty_raw       = row[qty_col]
+        gmv_raw       = row[revenue_col]
 
         if not sku_name:
             continue
@@ -300,7 +324,7 @@ def _parse_firstclub_sheet(rows, chain_name: str, upload_id: str) -> list:
         if bill_date is None:
             continue
 
-        month = bill_date.strftime("%B")   # e.g. "May"
+        month = bill_date.strftime("%B")   # e.g. "July"
         year  = bill_date.year             # e.g. 2026
 
         qty = 0
@@ -318,7 +342,6 @@ def _parse_firstclub_sheet(rows, chain_name: str, upload_id: str) -> list:
         if qty == 0 and revenue == 0.0:
             continue
 
-        # Aggregate into a single store keyed by (month, year, sku_name)
         key = (month, year, sku_name)
         if key not in aggregated:
             aggregated[key] = {"qty": 0, "revenue": 0.0}
@@ -331,9 +354,9 @@ def _parse_firstclub_sheet(rows, chain_name: str, upload_id: str) -> list:
         records.append({
             "upload_id":  upload_id,
             "chain_name": chain_name,
-            "store_code": "FIRSTCLUB",   # single logical store — no FCN splitting
+            "store_code": "FIRSTCLUB",
             "store_name": "Firstclub",
-            "article_id": "",            # not present in this format
+            "article_id": "",
             "sku_name":   sku_name,
             "qty":        totals["qty"],
             "revenue":    round(totals["revenue"], 2),
