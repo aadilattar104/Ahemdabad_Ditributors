@@ -76,6 +76,10 @@ export function getExcelExportUrl(params = {}) {
   return `${BASE_URL}/export/excel${qs(params)}`;
 }
 
+export function getMtExcelExportUrl(params = {}) {
+  return `${BASE_URL}/export/excel/mt${qs(params)}`;
+}
+
 // ─── Modern Trade — chains & filters ─────────────────────────────────────────
 export async function getMtChains()                        { return request("/mt/chains"); }
 export async function getMtStores(params = {})             { return request(`/mt/analytics/stores${qs(params)}`); }

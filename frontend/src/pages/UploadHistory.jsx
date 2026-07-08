@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import UploadHistoryTable from "../components/UploadHistory/UploadHistoryTable";
 import {
-  getUploads, getExcelExportUrl, deleteUpload, renameDistributor,
+  getUploads, getExcelExportUrl, getMtExcelExportUrl, deleteUpload, renameDistributor,
   getMtUploads, deleteMtUpload, renameMtChain,
 } from "../services/api";
 
@@ -173,6 +173,13 @@ export default function UploadHistory({ onDistributorsChange }) {
         </div>
         {tab === "distributor" && (
           <a href={getExcelExportUrl()} download style={{ textDecoration: "none" }}>
+            <button style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+              <i className="ti ti-download" style={{ fontSize: 14 }} aria-hidden /> Export Excel
+            </button>
+          </a>
+        )}
+        {tab === "mt" && (
+          <a href={getMtExcelExportUrl()} download style={{ textDecoration: "none" }}>
             <button style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
               <i className="ti ti-download" style={{ fontSize: 14 }} aria-hidden /> Export Excel
             </button>

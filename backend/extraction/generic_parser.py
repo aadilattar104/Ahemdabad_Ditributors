@@ -709,15 +709,17 @@ def _parse_sangeeta_register(
     """
     records = []
 
-    # Fixed column indices for Sangeeta format
-    DATE_COL    = 0
-    BILLNO_COL  = 1
-    TYPE_COL    = 2  # "Sale", "S/Re" (return), "Scra" (scrap/damaged)
-    PARTY_COL   = 3
-    SKU_COL     = 4
-    QTY_COL     = 6
-    RATE_COL    = 8
-    MRP_AMT_COL = 11  # Amount column = col L (index 11), fixed for Sangeeta format
+    # Column indices — use dynamically detected positions passed in by caller.
+    # DATE and BILLNO are always at 0 and 1 in this format family.
+    # TYPE is always at 2. RATE is derived from qty and revenue if not detected.
+    DATE_COL    = date_col   if date_col   is not None else 0
+    BILLNO_COL  = billno_col if billno_col is not None else 1
+    TYPE_COL    = 2   # always col 2 in this format — "Sale", "S/Re", "Scra"
+    PARTY_COL   = party_col  if party_col  is not None else 3
+    SKU_COL     = sku_col    if sku_col    is not None else 4
+    QTY_COL     = qty_col    if qty_col    is not None else 6
+    RATE_COL    = None        # derived as revenue/qty below
+    MRP_AMT_COL = mrp_amt_col if mrp_amt_col is not None else 11
 
     # Transaction types that represent negative flows (returns / write-offs).
     # Qty and revenue for these rows must be stored as negative values so that
@@ -753,7 +755,7 @@ def _parse_sangeeta_register(
         txn_type = _str(row.iloc[TYPE_COL]).lower() if len(row) > TYPE_COL else ""
         qty      = _safe_int(row.iloc[QTY_COL])       if len(row) > QTY_COL     else 0
         revenue  = _safe_float(row.iloc[MRP_AMT_COL]) if len(row) > MRP_AMT_COL else 0.0
-        rate     = _safe_float(row.iloc[RATE_COL])    if len(row) > RATE_COL    else None
+        rate     = round(revenue / qty, 2) if (qty and revenue) else None
 
         # Enforce sign from transaction type — source data from Tally already
         # writes these as negatives, but we re-enforce here so any future

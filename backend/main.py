@@ -16,7 +16,7 @@ from analytics.aggregator import (get_cities, get_projection,
     get_top_shops_by_qty, get_skus, get_recurring_shops,
     get_top_shops_sku_breakdown, get_shop_activity_matrix,
 )
-from exports.exporter import export_to_excel, export_audit_csv
+from exports.exporter import export_to_excel, export_audit_csv, export_mt_to_excel
 from analytics.aggregator import get_distributor_mom
 from analytics.aggregator import _load_sku_maps_mt, _apply_sku_filter_mt, _norm_sku_mt
 
@@ -519,6 +519,21 @@ def export_audit(upload_id: str = Query(None)):
         content=csv_str,
         media_type="text/csv",
         headers={"Content-Disposition": 'attachment; filename="audit_log.csv"'},
+    )
+
+
+@app.get("/export/excel/mt")
+def export_mt_excel(
+    month: str = Query(None),
+    year: int = Query(None),
+    chain: str = Query(None),
+):
+    xlsx_bytes = export_mt_to_excel(month=month, year=year, chain=chain)
+    filename = f"mt_sales_{chain or 'all'}_{month or 'all'}_{year or 'all'}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(xlsx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

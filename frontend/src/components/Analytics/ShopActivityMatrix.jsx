@@ -210,6 +210,96 @@ function exportToPdf(distributor, filter, months, visibleShops, monthlySummary, 
 }
 
 
+
+// ── Beat MultiSelect — same UI as FilterBar MultiSelect ──────────────────────
+function BeatMultiSelect({ options, selected = [], onChange }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    function handleClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  const toggle = (val) => {
+    const next = selected.includes(val)
+      ? selected.filter(v => v !== val)
+      : [...selected, val];
+    onChange(next);
+  };
+
+  const isActive = selected.length > 0;
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          fontSize: 13, padding: "5px 10px",
+          borderRadius: "var(--border-radius-md)",
+          border: isActive
+            ? "0.5px solid var(--color-text-info, #378ADD)"
+            : "0.5px solid var(--color-border-secondary)",
+          background: isActive
+            ? "rgba(55,138,221,0.07)"
+            : "var(--color-background-primary)",
+          color: isActive
+            ? "var(--color-text-info, #378ADD)"
+            : "var(--color-text-secondary)",
+          cursor: "pointer", display: "flex", alignItems: "center", gap: 5,
+          whiteSpace: "nowrap",
+        }}
+      >
+        {isActive ? `beats: ${selected.length}` : "All beats"}
+        <i className="ti ti-chevron-down" style={{ fontSize: 11 }} aria-hidden />
+      </button>
+
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 200,
+          background: "var(--color-background-primary)",
+          border: "0.5px solid var(--color-border-secondary)",
+          borderRadius: "var(--border-radius-md)",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.10)",
+          minWidth: 180, maxHeight: 260, overflowY: "auto",
+          padding: "4px 0",
+        }}>
+          {options.map(opt => {
+            const sel = selected.includes(opt);
+            return (
+              <div
+                key={opt}
+                onClick={() => toggle(opt)}
+                style={{
+                  padding: "7px 12px", fontSize: 13, cursor: "pointer",
+                  display: "flex", alignItems: "center", gap: 8,
+                  background: sel ? "rgba(55,138,221,0.06)" : "transparent",
+                  color: sel ? "var(--color-text-info, #378ADD)" : "var(--color-text-primary)",
+                }}
+              >
+                <span style={{
+                  width: 14, height: 14, borderRadius: 3, flexShrink: 0,
+                  border: sel
+                    ? "1.5px solid var(--color-text-info, #378ADD)"
+                    : "1.5px solid var(--color-border-secondary)",
+                  background: sel ? "var(--color-text-info, #378ADD)" : "transparent",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}>
+                  {sel && <i className="ti ti-check" style={{ fontSize: 9, color: "#fff" }} />}
+                </span>
+                {opt}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Skeleton loader ───────────────────────────────────────────────────────────
 function Skeleton() {
   return (
@@ -234,7 +324,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
   const [grammage,     setGrammage]     = useState("");       // selected grammage bucket
   const [canonicalSkus, setCanonicalSkus] = useState([]);    // canonical SKUs for current category
   const [beats,         setBeats]         = useState({});    // { shop_name: beat }
-  const [beatFilter,    setBeatFilter]    = useState("");     // selected beat value
+  const [beatFilter,    setBeatFilter]    = useState([]);     // selected beat values (multi)
   const [editingBeat,   setEditingBeat]   = useState(null);  // shop_name being edited
   const [beatDraft,     setBeatDraft]     = useState("");
 
@@ -255,7 +345,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
   }, [category]);
 
   useEffect(() => {
-    if (!distributor) { setBeats({}); setBeatFilter(""); return; }
+    if (!distributor) { setBeats({}); setBeatFilter([]); return; }
     fetch(`${BASE_URL}/shop-beats?distributor=${encodeURIComponent(distributor)}`)
       .then(r => r.json())
       .then(rows => {
@@ -286,7 +376,7 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
   const visibleShops = data
     ? data.shops.filter(shop => {
         if (filter !== "All" && classifyShop(shop) !== filter) return false;
-        if (beatFilter && beats[shop.shop_name] !== beatFilter) return false;
+        if (beatFilter.length > 0 && !beatFilter.includes(beats[shop.shop_name])) return false;
         return true;
       })
     : [];
@@ -507,23 +597,15 @@ export default function ShopActivityMatrix({ distributors = [], city, year }) {
             </div>
           )}
 
-          {/* ── Beat filter dropdown ────────────────────────────────────── */}
+          {/* ── Beat filter multi-select ─────────────────────────────────── */}
           {data && distinctBeats.length > 0 && (
             <div style={{ padding: "8px 18px", borderBottom: "0.5px solid var(--color-border-tertiary)", display: "flex", alignItems: "center", gap: 8 }}>
               <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: "0.04em", whiteSpace: "nowrap" }}>Beat</span>
-              <select
-                value={beatFilter}
-                onChange={e => setBeatFilter(e.target.value)}
-                style={S.select}
-              >
-                <option value="">All beats</option>
-                {distinctBeats.map(b => <option key={b} value={b}>{b}</option>)}
-              </select>
-              {beatFilter && (
-                <button onClick={() => setBeatFilter("")} style={{ ...S.iconBtn, fontSize: 12, color: "var(--color-text-tertiary)" }} title="Clear beat filter">
-                  <i className="ti ti-x" aria-hidden />
-                </button>
-              )}
+              <BeatMultiSelect
+                options={distinctBeats}
+                selected={beatFilter}
+                onChange={setBeatFilter}
+              />
             </div>
           )}
 
