@@ -831,8 +831,23 @@ def _parse_pune_grouped(
         # ── Invoice header row: col0 is a positive integer (S.no) ─────────────────────
         # Invoice row ALSO carries the first SKU inline in cols 4-7 — emit it.
         if _is_pos_int(col0):
-            current_bill_date = _parse_date(row.iloc[DATE_COL])   if len(row) > DATE_COL   else None
-            current_bill_no   = _str(row.iloc[BILLNO_COL])         if len(row) > BILLNO_COL else None
+            raw_date_val = row.iloc[DATE_COL]   if len(row) > DATE_COL   else None
+            raw_billno_val = row.iloc[BILLNO_COL] if len(row) > BILLNO_COL else None
+            current_bill_date = _parse_date(raw_date_val)
+            current_bill_no   = _str(raw_billno_val)
+            # ── Swapped-column recovery ────────────────────────────────────
+            # Some manually-edited source sheets have Bill No and Date
+            # accidentally swapped for individual rows (date_col holds the
+            # bill no string, billno_col holds the actual date). If the date
+            # column failed to parse but the bill-no column parses as a valid
+            # date, treat the columns as swapped for this row only — this
+            # recovers bill_date (and therefore month/year) without altering
+            # any other parsing logic or format.
+            if current_bill_date is None:
+                alt_date = _parse_date(raw_billno_val)
+                if alt_date is not None:
+                    current_bill_date = alt_date
+                    current_bill_no   = _str(raw_date_val)
             shop_raw          = _str(row.iloc[SHOP_COL])            if len(row) > SHOP_COL   else ""
             current_shop, current_shop_type = (
                 clean_shop_name(shop_raw) if shop_raw else ("UNKNOWN", "REGULAR")
